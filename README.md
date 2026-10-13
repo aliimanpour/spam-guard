@@ -100,11 +100,23 @@ echo "sdk.dir=/path/to/android-sdk" > local.properties
 # build the debug APK
 ./gradlew :app:assembleDebug
 
+# build the release APK
+./gradlew :app:assembleRelease
+
 # run the unit tests for the rule engine
 ./gradlew :app:testDebugUnitTest
 ```
 
-The debug APK is written to `app/build/outputs/apk/debug/app-debug.apk`.
+The debug APK is written to `app/build/outputs/apk/debug/app-debug.apk` and the
+release APK to `app/build/outputs/apk/release/app-release.apk`.
+
+> The release build is signed with the Android **debug** keystore so it installs
+> out of the box. It is fine for testing and side-loading, but it is **not**
+> suitable for publishing to a store — swap in a real signing config for that.
+
+Releases are built automatically by the [Build & Release](.github/workflows/build.yml)
+workflow: every push uploads the APK as an artifact, and pushing a `v*` tag
+creates a GitHub Release with the APK attached.
 
 ## Tech
 
