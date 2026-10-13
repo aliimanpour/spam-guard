@@ -9,6 +9,20 @@ Messages that match a rule are moved out of the system SMS app and kept inside
 Spam Guard, so nothing is ever lost and anything flagged by mistake can be
 reviewed and restored.
 
+## Screenshots
+
+| Blocked messages | Empty quarantine | Detection rules |
+| --- | --- | --- |
+| ![Blocked messages](docs/screenshots/blocked-messages.png) | ![Empty quarantine](docs/screenshots/empty-quarantine.png) | ![Detection rules](docs/screenshots/rules.png) |
+
+| Rule editor | Live rule tester | Settings |
+| --- | --- | --- |
+| ![Rule editor](docs/screenshots/rule-editor.png) | ![Live rule tester](docs/screenshots/rule-tester.png) | ![Settings](docs/screenshots/settings.png) |
+
+| Default SMS app |
+| --- |
+| ![Default SMS app](docs/screenshots/default-sms-app.png) |
+
 ## Features
 
 - **Rule builder** — name, enabled toggle, AND/OR combination and any number of
