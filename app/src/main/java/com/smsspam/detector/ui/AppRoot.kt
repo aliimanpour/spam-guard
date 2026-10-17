@@ -1,13 +1,16 @@
 package com.smsspam.detector.ui
 
+import android.net.Uri
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Rule
 import androidx.compose.material.icons.automirrored.outlined.Rule
-import androidx.compose.material.icons.filled.Shield
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.Shield
+import androidx.compose.material.icons.filled.Sms
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material.icons.outlined.Shield
+import androidx.compose.material.icons.outlined.Sms
 import androidx.compose.material3.Icon
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
@@ -25,23 +28,32 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavDestination.Companion.hierarchy
 import androidx.navigation.NavGraph.Companion.findStartDestination
+import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
-import androidx.navigation.NavType
+import com.smsspam.detector.ui.screens.ConversationScreen
+import com.smsspam.detector.ui.screens.ConversationsScreen
 import com.smsspam.detector.ui.screens.QuarantineScreen
 import com.smsspam.detector.ui.screens.RuleEditorScreen
 import com.smsspam.detector.ui.screens.RulesScreen
+import com.smsspam.detector.ui.screens.ScheduledScreen
 import com.smsspam.detector.ui.screens.SettingsScreen
 
 private object Routes {
+    const val MESSAGES = "messages"
     const val QUARANTINE = "quarantine"
     const val RULES = "rules"
     const val SETTINGS = "settings"
+    const val SCHEDULED = "scheduled"
+    const val COMPOSE = "compose"
+    const val CONVERSATION = "conversation"
+    const val CONVERSATION_ARG = "address"
     const val RULE_EDITOR = "rule_editor"
     const val RULE_EDITOR_ARG = "ruleId"
+    fun conversation(address: String) = "$CONVERSATION/${Uri.encode(address)}"
     fun ruleEditor(id: String) = "$RULE_EDITOR/$id"
 }
 
@@ -60,6 +72,7 @@ fun AppRoot(viewModel: AppViewModel = viewModel()) {
     val currentDestination = backStackEntry?.destination
 
     val topLevel = listOf(
+        TopLevelDestination(Routes.MESSAGES, "Messages", Icons.Filled.Sms, Icons.Outlined.Sms),
         TopLevelDestination(Routes.QUARANTINE, "Blocked", Icons.Filled.Shield, Icons.Outlined.Shield),
         TopLevelDestination(Routes.RULES, "Rules", Icons.AutoMirrored.Filled.Rule, Icons.AutoMirrored.Outlined.Rule),
         TopLevelDestination(Routes.SETTINGS, "Settings", Icons.Filled.Settings, Icons.Outlined.Settings),
@@ -110,9 +123,17 @@ fun AppRoot(viewModel: AppViewModel = viewModel()) {
     ) { innerPadding ->
         NavHost(
             navController = navController,
-            startDestination = Routes.QUARANTINE,
+            startDestination = Routes.MESSAGES,
             modifier = Modifier.padding(innerPadding),
         ) {
+            composable(Routes.MESSAGES) {
+                ConversationsScreen(
+                    viewModel = viewModel,
+                    onOpenConversation = { address -> navController.navigate(Routes.conversation(address)) },
+                    onNewMessage = { navController.navigate(Routes.COMPOSE) },
+                    onOpenScheduled = { navController.navigate(Routes.SCHEDULED) },
+                )
+            }
             composable(Routes.QUARANTINE) {
                 QuarantineScreen(
                     viewModel = viewModel,
@@ -127,6 +148,23 @@ fun AppRoot(viewModel: AppViewModel = viewModel()) {
             }
             composable(Routes.SETTINGS) {
                 SettingsScreen(viewModel = viewModel)
+            }
+            composable(Routes.SCHEDULED) {
+                ScheduledScreen(viewModel = viewModel, onBack = { navController.popBackStack() })
+            }
+            composable(Routes.COMPOSE) {
+                ConversationScreen(viewModel = viewModel, address = null, onBack = { navController.popBackStack() })
+            }
+            composable(
+                route = "${Routes.CONVERSATION}/{${Routes.CONVERSATION_ARG}}",
+                arguments = listOf(navArgument(Routes.CONVERSATION_ARG) { type = NavType.StringType }),
+            ) { entry ->
+                val address = entry.arguments?.getString(Routes.CONVERSATION_ARG)?.let { Uri.decode(it) }
+                ConversationScreen(
+                    viewModel = viewModel,
+                    address = address,
+                    onBack = { navController.popBackStack() },
+                )
             }
             composable(
                 route = "${Routes.RULE_EDITOR}/{${Routes.RULE_EDITOR_ARG}}",

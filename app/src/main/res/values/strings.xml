@@ -4,4 +4,6 @@
     <string name="spam_channel_description">Alerts when an incoming SMS is flagged as spam.</string>
     <string name="message_channel_name">New messages</string>
     <string name="message_channel_description">Alerts for normal messages received while Spam Guard is the default SMS app.</string>
+    <string name="scheduled_channel_name">Scheduled messages</string>
+    <string name="scheduled_channel_description">Confirms when a scheduled SMS is sent or fails.</string>
 </resources>

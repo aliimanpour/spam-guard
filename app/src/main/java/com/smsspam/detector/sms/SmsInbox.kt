@@ -2,7 +2,9 @@ package com.smsspam.detector.sms
 
 import android.content.ContentValues
 import android.content.Context
+import android.app.role.RoleManager
 import android.net.Uri
+import android.os.Build
 import android.provider.Telephony
 import com.smsspam.detector.model.QuarantineMessage
 
@@ -86,7 +88,16 @@ object SmsInbox {
 
     /** True when this app currently holds the default SMS role. */
     fun isDefaultSmsApp(context: Context): Boolean = try {
-        Telephony.Sms.getDefaultSmsPackage(context) == context.packageName
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            // Some OEM ROMs (e.g. MIUI) keep the role in RoleManager without
+            // updating the legacy `sms_default_application` setting, so prefer
+            // the role check and only fall back to the secure setting.
+            val roleManager = context.getSystemService(RoleManager::class.java)
+            roleManager?.isRoleHeld(RoleManager.ROLE_SMS)
+                ?: (Telephony.Sms.getDefaultSmsPackage(context) == context.packageName)
+        } else {
+            Telephony.Sms.getDefaultSmsPackage(context) == context.packageName
+        }
     } catch (_: Exception) {
         false
     }

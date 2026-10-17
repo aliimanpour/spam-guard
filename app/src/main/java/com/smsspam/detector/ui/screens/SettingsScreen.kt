@@ -78,6 +78,14 @@ fun SettingsScreen(viewModel: AppViewModel) {
         }
     }
 
+    val exportLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("application/json")
+    ) { uri -> uri?.let { viewModel.exportData(it) } }
+
+    val importLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument()
+    ) { uri -> uri?.let { viewModel.importData(it) } }
+
     Scaffold(
         topBar = {
             TopAppBar(
@@ -165,6 +173,29 @@ fun SettingsScreen(viewModel: AppViewModel) {
                 )
                 OutlinedButton(onClick = { viewModel.resetRules() }, modifier = Modifier.padding(top = 8.dp)) {
                     Text("Restore preset rules")
+                }
+            }
+
+            SectionTitle("Backup")
+            InfoCard {
+                Text(
+                    "Export your rules, blocked messages and scheduled messages to a single JSON file, " +
+                        "then import it on another device. Importing replaces your rules and merges messages.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Row(
+                    modifier = Modifier.padding(top = 8.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    Button(onClick = { exportLauncher.launch("spam-guard-backup.json") }) {
+                        Text("Export")
+                    }
+                    OutlinedButton(
+                        onClick = { importLauncher.launch(arrayOf("application/json", "text/plain", "*/*")) },
+                    ) {
+                        Text("Import")
+                    }
                 }
             }
 

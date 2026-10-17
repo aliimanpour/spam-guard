@@ -27,6 +27,11 @@ enum class AppPermission(val permission: String, val title: String, val rational
         "Send messages",
         "Needed to reply to messages and to act as the default SMS app.",
     ),
+    READ_CONTACTS(
+        Manifest.permission.READ_CONTACTS,
+        "Contacts",
+        "Shows contact names instead of raw phone numbers in your conversations.",
+    ),
     POST_NOTIFICATIONS(
         "android.permission.POST_NOTIFICATIONS",
         "Notifications",
@@ -39,6 +44,7 @@ enum class AppPermission(val permission: String, val title: String, val rational
                 add(RECEIVE_SMS)
                 add(READ_SMS)
                 add(SEND_SMS)
+                add(READ_CONTACTS)
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) add(POST_NOTIFICATIONS)
             }
     }

@@ -70,4 +70,23 @@ object Notifier {
             // POST_NOTIFICATIONS not granted.
         }
     }
+
+    /** Confirms that a scheduled message was delivered (or failed). */
+    fun notifyScheduledResult(context: Context, recipient: String, body: String, success: Boolean) {
+        val preview = body.replace('\n', ' ').take(110)
+        val notification = NotificationCompat.Builder(context, SpamGuardApp.SCHEDULED_CHANNEL_ID)
+            .setSmallIcon(R.drawable.ic_notification)
+            .setContentTitle(if (success) "Scheduled message sent" else "Scheduled message failed")
+            .setContentText("To ${recipient.ifBlank { "Unknown" }}: $preview")
+            .setStyle(NotificationCompat.BigTextStyle().bigText("To ${recipient.ifBlank { "Unknown" }}: $preview"))
+            .setPriority(NotificationCompat.PRIORITY_DEFAULT)
+            .setAutoCancel(true)
+            .build()
+
+        try {
+            NotificationManagerCompat.from(context).notify(("scheduled-$recipient").hashCode(), notification)
+        } catch (_: SecurityException) {
+            // POST_NOTIFICATIONS not granted.
+        }
+    }
 }
