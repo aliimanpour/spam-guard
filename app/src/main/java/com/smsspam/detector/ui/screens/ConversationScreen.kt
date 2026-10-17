@@ -21,6 +21,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -29,6 +30,9 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Send
@@ -73,6 +77,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLayoutDirection
+import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
@@ -127,6 +133,9 @@ fun ConversationScreen(
     var showConversationMenu by remember { mutableStateOf(false) }
     // User's SIM choice for this open; null keeps the remembered per-conversation SIM.
     var simOverride by remember(address) { mutableStateOf<Int?>(null) }
+    // Set right after a send so the next list change scrolls back to the new
+    // balloon even if the user had scrolled up into history.
+    var jumpToLatest by remember { mutableStateOf(false) }
     val chosenSubId = simOverride ?: viewModel.selectedSubId(address.orEmpty())
     val isNew = address.isNullOrBlank()
 
@@ -161,6 +170,18 @@ fun ConversationScreen(
     // `contacts` is observed so the header updates when contact names arrive.
     val displayTitle = remember(recipient, contacts) { viewModel.contactName(recipient) ?: recipient }
     val canSend = recipient.isNotBlank() && body.isNotBlank()
+
+    // Sends the current draft (or asks for the default-SMS role first) and
+    // flags the thread to scroll to the newly created balloon.
+    val sendMessage: () -> Unit = {
+        if (!isDefaultSms) {
+            showDefaultDialog = true
+        } else if (canSend) {
+            viewModel.sendSms(recipient, body, chosenSubId)
+            body = ""
+            jumpToLatest = true
+        }
+    }
 
     val copyText: (String) -> Unit = { text ->
         val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
@@ -250,21 +271,22 @@ fun ConversationScreen(
         },
         bottomBar = {
             Surface(tonalElevation = 3.dp, color = MaterialTheme.colorScheme.surface) {
-                Column {
+                // Lifts the composer above the gesture-navigation area when the
+                // keyboard is closed; the Scaffold's imePadding consumes the
+                // same insets while the keyboard is open, so no double padding.
+                Column(modifier = Modifier.navigationBarsPadding()) {
                     HorizontalDivider()
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(horizontal = 8.dp, vertical = 8.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(4.dp),
+                            .padding(horizontal = 12.dp, vertical = 6.dp),
+                        verticalAlignment = Alignment.Bottom,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
                     ) {
-                        OutlinedTextField(
+                        MessageInputField(
                             value = body,
                             onValueChange = { body = it },
-                            placeholder = { Text("Text message") },
-                            maxLines = 4,
-                            shape = RoundedCornerShape(24.dp),
+                            onSend = { sendMessage() },
                             modifier = Modifier.weight(1f),
                         )
                         if (sims.size > 1) {
@@ -288,21 +310,24 @@ fun ConversationScreen(
                                 }
                             },
                             enabled = canSend,
+                            modifier = Modifier.size(40.dp),
                         ) {
-                            Icon(Icons.Filled.Schedule, contentDescription = "Schedule send")
+                            Icon(
+                                Icons.Filled.Schedule,
+                                contentDescription = "Schedule send",
+                                modifier = Modifier.size(22.dp),
+                            )
                         }
                         FilledIconButton(
-                            onClick = {
-                                if (!isDefaultSms) {
-                                    showDefaultDialog = true
-                                } else {
-                                    viewModel.sendSms(recipient, body, chosenSubId)
-                                    body = ""
-                                }
-                            },
+                            onClick = sendMessage,
                             enabled = canSend,
+                            modifier = Modifier.size(40.dp),
                         ) {
-                            Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "Send")
+                            Icon(
+                                Icons.AutoMirrored.Filled.Send,
+                                contentDescription = "Send",
+                                modifier = Modifier.size(20.dp),
+                            )
                         }
                     }
                 }
@@ -373,9 +398,16 @@ fun ConversationScreen(
                 val ordered = messages.asReversed()
                 // Keep the view pinned to the newest message while it is already
                 // at the bottom, so arriving messages flow in without dragging
-                // the list away from history the user is reading.
+                // the list away from history the user is reading. A send always
+                // scrolls back to the newest balloon instead.
                 LaunchedEffect(ordered.firstOrNull()?.id) {
-                    if (listState.firstVisibleItemIndex == 0) listState.scrollToItem(0)
+                    when {
+                        jumpToLatest -> {
+                            jumpToLatest = false
+                            listState.animateScrollToItem(0)
+                        }
+                        listState.firstVisibleItemIndex == 0 -> listState.scrollToItem(0)
+                    }
                 }
                 LazyColumn(
                     modifier = Modifier.fillMaxSize(),
@@ -475,6 +507,53 @@ private fun shareText(context: Context, text: String) {
         context.startActivity(Intent.createChooser(intent, "Share"))
     } catch (_: Exception) {
         // No app to handle the share intent.
+    }
+}
+
+/**
+ * Pill-shaped message input for the compose bar. Stays one compact line while
+ * empty and grows up to four lines as the draft grows; the keyboard's IME
+ * send action triggers [onSend].
+ */
+@Composable
+private fun MessageInputField(
+    value: String,
+    onValueChange: (String) -> Unit,
+    onSend: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Surface(
+        modifier = modifier,
+        shape = RoundedCornerShape(22.dp),
+        color = MaterialTheme.colorScheme.surfaceContainerHigh,
+    ) {
+        BasicTextField(
+            value = value,
+            onValueChange = onValueChange,
+            modifier = Modifier.fillMaxWidth(),
+            textStyle = MaterialTheme.typography.bodyMedium.copy(
+                color = MaterialTheme.colorScheme.onSurface,
+            ),
+            cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
+            maxLines = 4,
+            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
+            keyboardActions = KeyboardActions(onSend = { onSend() }),
+            decorationBox = { innerTextField ->
+                Box(
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 11.dp),
+                    contentAlignment = Alignment.CenterStart,
+                ) {
+                    if (value.isEmpty()) {
+                        Text(
+                            text = "Text message",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    innerTextField()
+                }
+            },
+        )
     }
 }
 
