@@ -114,23 +114,74 @@ echo "sdk.dir=/path/to/android-sdk" > local.properties
 # build the debug APK
 ./gradlew :app:assembleDebug
 
-# build the release APK
-./gradlew :app:assembleRelease
+# build the release APK + App Bundle (Android App Bundle)
+./gradlew :app:assembleRelease :app:bundleRelease
 
 # run the unit tests for the rule engine
 ./gradlew :app:testDebugUnitTest
 ```
 
-The debug APK is written to `app/build/outputs/apk/debug/app-debug.apk` and the
-release APK to `app/build/outputs/apk/release/app-release.apk`.
+The debug APK is written to `app/build/outputs/apk/debug/app-debug.apk`, the
+release APK to `app/build/outputs/apk/release/app-release.apk` and the release
+bundle to `app/build/outputs/bundle/release/app-release.aab`.
 
-> The release build is signed with the Android **debug** keystore so it installs
-> out of the box. It is fine for testing and side-loading, but it is **not**
-> suitable for publishing to a store — swap in a real signing config for that.
+### Release signing
+
+Release builds are signed with a real release keystore, read from a git-ignored
+`keystore.properties` (local) or `RELEASE_*` environment variables (CI). Create
+the keystore once:
+
+```bash
+./scripts/generate-keystore.sh
+```
+
+This writes `keystore/release.jks` and `keystore.properties` (both git-ignored).
+Resolve the signing config for the current checkout with
+`./gradlew :app:signingReport`.
+
+> **Back up the keystore.** Cafe Bazaar binds updates to the signing key — if you
+> lose `release.jks` you can no longer publish updates for `com.smsspam.detector`.
+>
+> If no keystore is configured the release build falls back to the Android debug
+> keystore so the build still works; that fallback is for local testing and
+> side-loading only and **must not be published**.
 
 Releases are built automatically by the [Build & Release](.github/workflows/build.yml)
-workflow: every push uploads the APK as an artifact, and pushing a `v*` tag
-creates a GitHub Release with the APK attached.
+workflow: every push uploads both artifacts, and pushing a `v*` tag creates a
+GitHub Release with the APK and AAB attached. Adding the `RELEASE_KEYSTORE_BASE64`
+(a base64 of `release.jks`), `RELEASE_STORE_PASSWORD`, `RELEASE_KEY_ALIAS` and
+`RELEASE_KEY_PASSWORD` repository secrets makes CI produce **signed**,
+publishable artifacts.
+
+## Publish to Cafe Bazaar
+
+Cafe Bazaar accepts both a signed **APK** and an **Android App Bundle (.aab)**;
+uploading the AAB lets Bazaar generate per-device optimized APKs.
+
+1. **Bump the version** in `app/build.gradle.kts` before each upload —
+   `versionCode` must increase, `versionName` is what users see:
+   ```kotlin
+   versionCode = 2
+   versionName = "1.1"
+   ```
+2. **Create the keystore** (once) and build the signed artifacts:
+   ```bash
+   ./scripts/generate-keystore.sh
+   ./gradlew :app:assembleRelease :app:bundleRelease
+   ```
+3. **Verify the signature** before uploading (the certificate must be your
+   release key, not `AndroidDebugKey`):
+   ```bash
+   $ANDROID_SDK/build-tools/36.0.0/apksigner verify --print-certs \
+       app/build/outputs/apk/release/app-release.apk
+   ```
+4. **Upload** `app-release.aab` (preferred) or `app-release.apk` in the
+   [Cafe Bazaar developer panel](https://pishkhan.cafebazaar.ir) under your app,
+   fill in the store listing, and submit for review.
+
+> Cafe Bazaar re-signs uploaded packages with its own key, so the certificate on
+> the file you upload is only used for identification during review. Keep using
+> the **same** `release.jks` for every update.
 
 ## Tech
 

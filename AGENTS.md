@@ -100,5 +100,9 @@ the background.
 - Commit style: short imperative summaries (e.g. `Add inbox scan result state`).
 - Run `:app:testDebugUnitTest` before proposing changes that touch the engine,
   models or repositories.
-- Do not commit build output, `.gradle/`, `.kotlin/`, `local.properties`, or IDE
-  files — they are covered by `.gitignore`.
+- Do not commit build output, `.gradle/`, `.kotlin/`, `local.properties`, the
+  release keystore (`keystore/`, `keystore.properties`, `*.jks`), or IDE files —
+  they are covered by `.gitignore`.
+- Release builds read signing credentials from `keystore.properties` (local) or
+  `RELEASE_*` env vars (CI); see `scripts/generate-keystore.sh`. Signed release
+  APK/AAB artifacts are what get published to Cafe Bazaar (see README).
