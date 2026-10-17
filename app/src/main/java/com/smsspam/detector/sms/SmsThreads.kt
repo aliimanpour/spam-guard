@@ -26,6 +26,15 @@ data class SmsConversation(
 )
 
 /**
+ * Everything the conversations UI needs from one pass over the SMS provider:
+ * the thread summaries and the messages of every thread, keyed by address.
+ */
+data class InboxThreads(
+    val conversations: List<SmsConversation>,
+    val messagesByAddress: Map<String, List<SmsMessage>>,
+)
+
+/**
  * Reads and updates the system SMS provider for the in-app conversations UI.
  * All calls require READ_SMS and degrade gracefully (empty / false) when the
  * permission is missing or the provider is unavailable.
@@ -42,20 +51,23 @@ object SmsThreads {
     )
 
     /**
-     * Builds the conversation list from every SMS, newest thread first. Rows are
-     * aggregated in a single pass without allocating a [SmsMessage] per message,
-     * which keeps large inboxes cheap to refresh.
+     * Builds the conversation list and every thread's messages in a single
+     * pass, oldest message first. Reading the inbox once and keeping the
+     * messages in memory is what lets opening a thread render instantly instead
+     * of waiting on a fresh provider query.
      */
-    fun readConversations(context: Context): List<SmsConversation> {
+    fun readInbox(context: Context): InboxThreads {
         val builders = HashMap<String, ConversationAggregate>()
+        val messages = HashMap<String, MutableList<SmsMessage>>()
         try {
             context.contentResolver.query(
                 Telephony.Sms.CONTENT_URI,
                 columns,
                 null,
                 null,
-                "${Telephony.Sms.DATE} DESC",
+                "${Telephony.Sms.DATE} ASC",
             )?.use { cursor ->
+                val idIdx = cursor.getColumnIndexOrThrow(Telephony.Sms._ID)
                 val addressIdx = cursor.getColumnIndexOrThrow(Telephony.Sms.ADDRESS)
                 val bodyIdx = cursor.getColumnIndexOrThrow(Telephony.Sms.BODY)
                 val dateIdx = cursor.getColumnIndexOrThrow(Telephony.Sms.DATE)
@@ -63,26 +75,36 @@ object SmsThreads {
                 val readIdx = cursor.getColumnIndexOrThrow(Telephony.Sms.READ)
                 while (cursor.moveToNext()) {
                     val address = cursor.getString(addressIdx) ?: "Unknown"
+                    val type = cursor.getInt(typeIdx)
+                    val timestamp = cursor.getLong(dateIdx)
+                    val body = cursor.getString(bodyIdx) ?: ""
+                    val read = cursor.getInt(readIdx) == 1
+
                     val aggregate = builders.getOrPut(address) { ConversationAggregate() }
                     aggregate.count++
-                    if (cursor.getInt(typeIdx) == Telephony.Sms.MESSAGE_TYPE_INBOX &&
-                        cursor.getInt(readIdx) != 1
-                    ) {
+                    if (type == Telephony.Sms.MESSAGE_TYPE_INBOX && !read) {
                         aggregate.unread++
                     }
-                    // Rows arrive newest-first, so the first row per address wins.
-                    if (!aggregate.hasLatest) {
-                        aggregate.hasLatest = true
-                        aggregate.timestamp = cursor.getLong(dateIdx)
-                        aggregate.snippet = cursor.getString(bodyIdx) ?: ""
-                    }
+                    // Rows arrive oldest-first, so the last row per address is the
+                    // most recent message and becomes the thread's snippet.
+                    aggregate.timestamp = timestamp
+                    aggregate.snippet = body
+
+                    messages.getOrPut(address) { ArrayList() } += SmsMessage(
+                        id = cursor.getLong(idIdx),
+                        address = address,
+                        body = body,
+                        timestamp = timestamp,
+                        type = type,
+                        read = read,
+                    )
                 }
             }
         } catch (_: Exception) {
-            return emptyList()
+            return InboxThreads(emptyList(), emptyMap())
         }
 
-        return builders.map { (address, aggregate) ->
+        val conversations = builders.map { (address, aggregate) ->
             SmsConversation(
                 address = address,
                 snippet = aggregate.snippet,
@@ -91,6 +113,8 @@ object SmsThreads {
                 unreadCount = aggregate.unread,
             )
         }.sortedByDescending { it.timestamp }
+
+        return InboxThreads(conversations = conversations, messagesByAddress = messages)
     }
 
     /** Mutable accumulator used while grouping inbox rows into threads. */
@@ -99,7 +123,6 @@ object SmsThreads {
         var unread: Int = 0
         var timestamp: Long = 0L
         var snippet: String = ""
-        var hasLatest: Boolean = false
     }
 
     /** All messages exchanged with [address], oldest first. */

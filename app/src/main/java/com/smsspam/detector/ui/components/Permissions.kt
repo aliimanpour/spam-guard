@@ -32,6 +32,11 @@ enum class AppPermission(val permission: String, val title: String, val rational
         "Contacts",
         "Shows contact names instead of raw phone numbers in your conversations.",
     ),
+    READ_CALL_LOG(
+        Manifest.permission.READ_CALL_LOG,
+        "Call history",
+        "Suggests people from your recent calls when you start a new message.",
+    ),
     POST_NOTIFICATIONS(
         "android.permission.POST_NOTIFICATIONS",
         "Notifications",
@@ -45,6 +50,7 @@ enum class AppPermission(val permission: String, val title: String, val rational
                 add(READ_SMS)
                 add(SEND_SMS)
                 add(READ_CONTACTS)
+                add(READ_CALL_LOG)
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) add(POST_NOTIFICATIONS)
             }
     }

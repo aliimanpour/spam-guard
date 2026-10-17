@@ -3,6 +3,7 @@ package com.smsspam.detector.ui
 import android.net.Uri
 import androidx.compose.animation.EnterTransition
 import androidx.compose.animation.ExitTransition
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Rule
@@ -122,6 +123,11 @@ fun AppRoot(
 
     Scaffold(
         snackbarHost = { SnackbarHost(snackbarHostState) },
+        // This outer scaffold only owns the bottom navigation bar. Each screen
+        // draws its own top bar and handles the status bar inset, so consuming
+        // the window insets here too left a blank status-bar-tall gap above
+        // every screen's title bar.
+        contentWindowInsets = WindowInsets(0, 0, 0, 0),
         bottomBar = {
             if (showBottomBar) {
                 NavigationBar {

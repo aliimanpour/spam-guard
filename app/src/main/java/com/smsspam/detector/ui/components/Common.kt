@@ -13,6 +13,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import java.text.Bidi
 
 /** Formats a timestamp as a friendly relative string ("5 min ago", "Aug 3"). */
 fun relativeTime(millis: Long): String =
@@ -22,6 +23,14 @@ fun relativeTime(millis: Long): String =
         DateUtils.MINUTE_IN_MILLIS,
         DateUtils.FORMAT_ABBREV_RELATIVE,
     ).toString()
+
+/**
+ * True when [text] should be laid out right-to-left, e.g. Persian or Arabic.
+ * Uses the platform bidi algorithm so mixed content (numbers, Latin words)
+ * is judged from its first strong directional character.
+ */
+fun isRtl(text: String): Boolean =
+    Bidi(text, Bidi.DIRECTION_DEFAULT_LEFT_TO_RIGHT).isRightToLeft
 
 /** Small card used for the empty states on every list screen. */
 @Composable

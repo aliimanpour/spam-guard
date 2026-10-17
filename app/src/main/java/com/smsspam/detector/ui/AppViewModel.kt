@@ -6,6 +6,8 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.smsspam.detector.SpamGuardApp
 import com.smsspam.detector.contacts.ContactsResolver
+import com.smsspam.detector.contacts.Recipient
+import com.smsspam.detector.contacts.RecipientDirectory
 import com.smsspam.detector.data.DataTransfer
 import com.smsspam.detector.engine.RuleEngine
 import com.smsspam.detector.model.QuarantineMessage
@@ -57,6 +59,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     private val _contacts = MutableStateFlow<Map<String, String>>(emptyMap())
     val contacts: StateFlow<Map<String, String>> = _contacts.asStateFlow()
+
+    private val _recipients = MutableStateFlow<List<Recipient>>(emptyList())
+    val recipients: StateFlow<List<Recipient>> = _recipients.asStateFlow()
 
     private val _isDefaultSms = MutableStateFlow(SmsInbox.isDefaultSmsApp(app))
     val isDefaultSms: StateFlow<Boolean> = _isDefaultSms.asStateFlow()
@@ -155,17 +160,38 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     private var conversationsJob: Job? = null
     private var contactsJob: Job? = null
+    private var conversationJob: Job? = null
+    private var recipientsJob: Job? = null
 
     /**
-     * Reloads the conversation list from the system SMS provider. Concurrent
-     * requests are coalesced so navigating between screens never launches
-     * overlapping inbox reads.
+     * Messages of every thread from the last inbox scan, keyed by address. This
+     * is what makes opening a conversation instant: the thread renders from here
+     * immediately while a background refresh picks up anything new.
+     */
+    @Volatile
+    private var threadCache: Map<String, List<SmsMessage>> = emptyMap()
+
+    /** Address of the thread currently on screen, or null. */
+    @Volatile
+    private var openAddress: String? = null
+
+    /**
+     * Reloads the conversation list from the system SMS provider in a single
+     * pass that also caches every thread's messages. Concurrent requests are
+     * coalesced so navigating between screens never launches overlapping inbox
+     * reads.
      */
     fun refreshConversations() {
         if (conversationsJob?.isActive == true) return
         conversationsJob = viewModelScope.launch {
             val app = getApplication<Application>()
-            _conversations.value = withContext(Dispatchers.IO) { SmsThreads.readConversations(app) }
+            val inbox = withContext(Dispatchers.IO) { SmsThreads.readInbox(app) }
+            _conversations.value = inbox.conversations
+            threadCache = inbox.messagesByAddress
+            // Keep an already-open thread fresh without a visible reload.
+            openAddress?.let { address ->
+                inbox.messagesByAddress[address]?.let { _conversation.value = it }
+            }
         }
     }
 
@@ -191,17 +217,45 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     /** Contact name for an address, or null when it is not a saved contact. */
     fun contactName(address: String): String? = ContactsResolver.displayName(address, _contacts.value)
 
-    /** Opens a thread, marks it read and loads the messages (oldest first). */
+    /**
+     * Loads the recipient suggestion list (contacts, SMS threads and the call
+     * log) used by the "To" field. Best effort and cached; it retries on the
+     * next call while the list is still empty, so it fills in once the user
+     * grants READ_CONTACTS / READ_CALL_LOG.
+     */
+    fun refreshRecipients() {
+        if (recipientsJob?.isActive == true) return
+        if (_recipients.value.isNotEmpty()) return
+        recipientsJob = viewModelScope.launch {
+            val app = getApplication<Application>()
+            _recipients.value = withContext(Dispatchers.IO) { RecipientDirectory.load(app) }
+        }
+    }
+
+    /**
+     * Opens a thread. The messages render instantly from the cached inbox scan
+     * (never the previously opened thread), while a background read refreshes
+     * that one thread and marks it read.
+     */
     fun openConversation(address: String) {
+        conversationJob?.cancel()
+        openAddress = address.ifBlank { null }
         if (address.isBlank()) {
             _conversation.value = emptyList()
             return
         }
-        viewModelScope.launch {
+        // Instant: serve the already-scanned thread, or an empty list when the
+        // cache does not know it yet.
+        _conversation.value = threadCache[address] ?: emptyList()
+        conversationJob = viewModelScope.launch {
             val app = getApplication<Application>()
-            _conversation.value = withContext(Dispatchers.IO) {
+            val loaded = withContext(Dispatchers.IO) {
                 SmsThreads.markThreadRead(app, address)
                 SmsThreads.readMessages(app, address)
+            }
+            if (openAddress == address) {
+                threadCache = threadCache + (address to loaded)
+                _conversation.value = loaded
             }
         }
     }

@@ -60,6 +60,7 @@ import com.smsspam.detector.ui.AppViewModel
 import com.smsspam.detector.ui.components.AppPermission
 import com.smsspam.detector.ui.components.ContactAvatar
 import com.smsspam.detector.ui.components.EmptyState
+import com.smsspam.detector.ui.components.HighlightedText
 import com.smsspam.detector.ui.components.SetDefaultSmsDialog
 import com.smsspam.detector.ui.components.defaultSmsRoleIntent
 import com.smsspam.detector.ui.components.hasPermission
@@ -207,6 +208,7 @@ fun ConversationsScreen(
                             snippet = conversation.snippet,
                             timestamp = conversation.timestamp,
                             unread = conversation.unreadCount,
+                            query = query,
                             onClick = { onOpenConversation(conversation.address) },
                         )
                     }
@@ -234,6 +236,7 @@ private fun ConversationRow(
     snippet: String,
     timestamp: Long,
     unread: Int,
+    query: String,
     onClick: () -> Unit,
 ) {
     Row(
@@ -250,10 +253,12 @@ private fun ConversationRow(
             verticalArrangement = Arrangement.spacedBy(2.dp),
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(
+                HighlightedText(
                     text = name.ifBlank { "Unknown" },
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = if (unread > 0) FontWeight.Bold else FontWeight.SemiBold,
+                    query = query,
+                    style = MaterialTheme.typography.titleMedium.copy(
+                        fontWeight = if (unread > 0) FontWeight.Bold else FontWeight.SemiBold,
+                    ),
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.weight(1f),
@@ -266,8 +271,9 @@ private fun ConversationRow(
                 )
             }
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(
+                HighlightedText(
                     text = snippet.ifBlank { "(no text)" },
+                    query = query,
                     style = MaterialTheme.typography.bodyMedium,
                     color = if (unread > 0) {
                         MaterialTheme.colorScheme.onSurface
