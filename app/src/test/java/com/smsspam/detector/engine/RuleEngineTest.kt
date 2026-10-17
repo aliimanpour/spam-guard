@@ -10,6 +10,7 @@ import com.smsspam.detector.model.RuleLogic
 import com.smsspam.detector.model.SmsField
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -45,6 +46,36 @@ class RuleEngineTest {
         val rules = RuleRepository.defaultRules()
         assertNull(RuleEngine.firstMatch("", "سلام، حالت چطوره؟ قرار جلسه فردا ساعت ۵", rules))
         assertNull(RuleEngine.firstMatch("", "فاکتور خرید شما آماده است", rules))
+    }
+
+    @Test
+    fun `a link on its own is not spam`() {
+        // Regression: the old preset-links filter treated any URL as spam.
+        val rules = RuleRepository.defaultRules()
+        assertTrue(rules.none { it.id == "preset-links" })
+        assertNull(RuleEngine.firstMatch("", "اینو ببین https://example.com/abc", rules))
+        assertNull(RuleEngine.firstMatch("", "لطفا از این لینک استفاده کن bit.ly/abc", rules))
+        assertNull(RuleEngine.firstMatch("", "my.asiatech.ir را در مرورگر باز کن", rules))
+    }
+
+    @Test
+    fun `reported Persian promo messages are detected`() {
+        val rules = RuleRepository.defaultRules()
+        val samples = listOf(
+            "تا 100 گیگ اینترنت هدیه شبانت 🎁 کد دستوری اینترنت همراهی: *100*621#",
+            "هدیه ویژه همراه اول برای شما 15 گیگابایت اینترنت سه روزه رایگان *1000*2864#",
+            "مشترک گرامی آسیاتک فرصت ویژه تمدید سرویس با تخفیف استثنایی my.asiatech.ir",
+            "🎉 ۵۰ درصد تخفیف! فقط تا جمعه در کالا0098 kala0098.com",
+            "کاربر عزیز با ۲۰ میلیون تومان اعتبار اقساطی دیجی‌پی i.jabama.me/geRyjwZB",
+            "تبریک! ۱۰ سوت طلا هدیه با ثبت نام و اولین خرید jzbe.ir/17oor6",
+            "📱با هر ۱۰ هزار تومان خرید شارژ از همراه من، شانس بردن گوشی پرچمدار",
+            "ایمپلنت هر6واحد👈🏻1واحد رایگان اقساط0٪سود",
+            "هر ۱۰ هزار تومان خرید، ۱ امتیاز قرعه\u200cکشی کمک‌هزینه لپ‌تاپ",
+            "خرید پُروپیمون آخرهفته، با سوپرمارکت تپسی تا ۵۰٪ تخفیف بیشتر",
+        )
+        samples.forEach { body ->
+            assertNotNull("expected spam: $body", RuleEngine.firstMatch("", body, rules))
+        }
     }
 
     @Test

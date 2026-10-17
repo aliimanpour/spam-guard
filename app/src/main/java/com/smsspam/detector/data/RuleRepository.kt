@@ -106,8 +106,11 @@ class RuleRepository(context: Context) {
     private fun mergePresets(rules: List<Rule>): List<Rule> {
         val defaults = defaultRules()
         val defaultsById = defaults.associateBy { it.id }
-        val known = rules.mapTo(HashSet()) { it.id }
-        val refreshed = rules.map { rule ->
+        // Drop built-in presets that are no longer shipped, but keep any custom
+        // rule the user created (even if it happens to reuse a retired id).
+        val kept = rules.filterNot { it.builtin && it.id in RETIRED_PRESET_IDS }
+        val known = kept.mapTo(HashSet()) { it.id }
+        val refreshed = kept.map { rule ->
             val latest = defaultsById[rule.id]
             if (rule.builtin && latest != null) latest.copy(enabled = rule.enabled) else rule
         }
@@ -202,6 +205,29 @@ class RuleRepository(context: Context) {
                     Condition(id = "preset-fa-promo-11", field = SmsField.BODY, type = MatchType.CONTAINS, pattern = "سرمایه‌گذاری تضمینی"),
                     Condition(id = "preset-fa-promo-12", field = SmsField.BODY, type = MatchType.CONTAINS, pattern = "خرید فالوور"),
                     Condition(id = "preset-fa-promo-13", field = SmsField.BODY, type = MatchType.CONTAINS, pattern = "فالوور اینستاگرام"),
+                    // Advertising / promotion markers extracted from the Persian
+                    // promo messages the user reported. A link on its own is never
+                    // treated as spam; only these explicit ad phrases (or the
+                    // opt-out keyword) trigger a block.
+                    Condition(id = "preset-fa-promo-14", field = SmsField.BODY, type = MatchType.CONTAINS, pattern = "تخفیف"),
+                    Condition(id = "preset-fa-promo-15", field = SmsField.BODY, type = MatchType.CONTAINS, pattern = "هدیه"),
+                    Condition(id = "preset-fa-promo-16", field = SmsField.BODY, type = MatchType.CONTAINS, pattern = "رایگان"),
+                    Condition(id = "preset-fa-promo-17", field = SmsField.BODY, type = MatchType.CONTAINS, pattern = "کد دستوری"),
+                    Condition(id = "preset-fa-promo-18", field = SmsField.BODY, type = MatchType.CONTAINS, pattern = "کد معرف"),
+                    Condition(id = "preset-fa-promo-19", field = SmsField.BODY, type = MatchType.CONTAINS, pattern = "فرصت محدود"),
+                    Condition(id = "preset-fa-promo-20", field = SmsField.BODY, type = MatchType.CONTAINS, pattern = "فرصت ویژه"),
+                    Condition(id = "preset-fa-promo-21", field = SmsField.BODY, type = MatchType.CONTAINS, pattern = "اعتبار اقساطی"),
+                    Condition(id = "preset-fa-promo-22", field = SmsField.BODY, type = MatchType.CONTAINS, pattern = "خرید شارژ"),
+                    Condition(id = "preset-fa-promo-23", field = SmsField.BODY, type = MatchType.CONTAINS, pattern = "اپلیکیشن همراه من"),
+                    Condition(id = "preset-fa-promo-24", field = SmsField.BODY, type = MatchType.CONTAINS, pattern = "قرعه\u200cکشی"),
+                    Condition(id = "preset-fa-promo-25", field = SmsField.BODY, type = MatchType.CONTAINS, pattern = "شانس بردن"),
+                    // USSD dial codes (*100*4#، *1000*31#) are a strong ad marker.
+                    Condition(
+                        id = "preset-fa-promo-26",
+                        field = SmsField.BODY,
+                        type = MatchType.REGEX,
+                        pattern = "\\*[0-9۰-۹٠-٩]{2,4}(\\*[0-9۰-۹٠-٩]{1,4})+#",
+                    ),
                 ),
             ),
             Rule(
@@ -218,27 +244,17 @@ class RuleRepository(context: Context) {
                     Condition(id = "preset-prize-5", field = SmsField.BODY, type = MatchType.CONTAINS, pattern = "you won"),
                 ),
             ),
-            Rule(
-                id = "preset-links",
-                name = "Messages that contain links",
-                enabled = false,
-                logic = RuleLogic.ANY,
-                builtin = true,
-                conditions = listOf(
-                    Condition(
-                        id = "preset-links-1",
-                        field = SmsField.BODY,
-                        type = MatchType.REGEX,
-                        pattern = "https?://\\S+",
-                    ),
-                    Condition(id = "preset-links-2", field = SmsField.BODY, type = MatchType.CONTAINS, pattern = "bit.ly"),
-                    Condition(id = "preset-links-3", field = SmsField.BODY, type = MatchType.CONTAINS, pattern = "tinyurl.com"),
-                ),
-            ),
         )
 
+        /**
+         * Built-in presets that shipped before but are no longer offered. They
+         * are stripped from stored lists on upgrade — e.g. the old link-only
+         * filter, because a link on its own is not spam.
+         */
+        private val RETIRED_PRESET_IDS = setOf("preset-links")
+
         /** Bump when a new preset is added so stored lists pick it up on upgrade. */
-        const val PRESET_VERSION = 3
+        const val PRESET_VERSION = 4
 
         private const val KEY_PRESET_VERSION = "preset_version"
         private const val KEY_PROTECTION_ENABLED = "protection_enabled"

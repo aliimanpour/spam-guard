@@ -174,6 +174,13 @@ the background.
   tests consistent. Bump `PRESET_VERSION` when preset definitions change;
   `mergePresets` refreshes existing built-in presets to the latest definition
   while preserving each rule's enabled/disabled choice.
+- **A link alone is never spam.** The old `preset-links` filter was retired and
+  is stripped on upgrade (`RETIRED_PRESET_IDS` in `RuleRepository`). Do not
+  reintroduce URL-only blocking. `preset-fa-promo` instead carries Persian ad
+  markers extracted from reported promos (تخفیف، هدیه، رایگان، کد دستوری،
+  کد معرف، فرصت محدود/ویژه، اعتبار اقساطی، خرید شارژ، اپلیکیشن همراه من،
+  قرعه‌کشی، شانس بردن) plus USSD dial codes (`*100*4#`), so promos are caught
+  by content, not by the presence of a link.
 - MMS content is **not** downloaded; the WAP-push receiver exists only to satisfy
   the default-SMS-app role requirement.
 

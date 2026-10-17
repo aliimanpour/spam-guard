@@ -204,7 +204,7 @@ private fun ProtectionCard(
                     fontWeight = FontWeight.SemiBold,
                 )
                 Text(
-                    text = "Built-in filters for prize spam, opt-out messages, links and more. " +
+                    text = "Built-in filters for prize spam, opt-out messages and more. " +
                         "Verification codes are never blocked.",
                     style = MaterialTheme.typography.bodySmall,
                     color = if (enabled) {
