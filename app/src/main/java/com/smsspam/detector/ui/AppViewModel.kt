@@ -29,6 +29,7 @@ import com.smsspam.detector.sms.SmsSender
 import com.smsspam.detector.sms.SmsSims
 import com.smsspam.detector.sms.SmsThreadPage
 import com.smsspam.detector.sms.SmsThreads
+import com.smsspam.detector.sms.SendStatus
 import com.smsspam.detector.sms.SimSubscription
 import com.smsspam.detector.sms.ThreadCache
 import com.smsspam.detector.sms.restoreToInbox
@@ -134,7 +135,21 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     val conversations: StateFlow<List<SmsConversation>> = _conversations.asStateFlow()
 
     private val _conversation = MutableStateFlow<List<SmsMessage>>(emptyList())
-    val conversation: StateFlow<List<SmsMessage>> = _conversation.asStateFlow()
+
+    /**
+     * In-flight outgoing messages shown with a sending/sent/failed status icon
+     * until the provider refresh confirms them. Uses negative ids so they never
+     * collide with provider row ids.
+     */
+    private val _pendingSends = MutableStateFlow<List<SmsMessage>>(emptyList())
+    private val pendingIdCounter = java.util.concurrent.atomic.AtomicLong(0L)
+
+    /** The open thread's messages, merged with any in-flight sends, oldest first. */
+    val conversation: StateFlow<List<SmsMessage>> =
+        combine(_conversation, _pendingSends) { provider, pending ->
+            if (pending.isEmpty()) provider
+            else (provider + pending).distinctBy { it.id }.sortedBy { it.timestamp }
+        }.stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
 
     /** True while the first page of a thread the cache has never seen is loading. */
     private val _threadLoading = MutableStateFlow(false)
@@ -537,18 +552,104 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    /** Sends a message now (with the given SIM when provided) and refreshes the open thread. */
+    /**
+     * Sends a message now (with the given SIM when provided) and refreshes the open
+     * thread. A temporary in-memory message with [SendStatus.SENDING] appears in the
+     * conversation instantly; it is updated to [SendStatus.FAILED] on error or
+     * dropped once the provider refresh confirms the real row.
+     */
     fun sendSms(recipient: String, body: String, subId: Int = 0) {
         if (recipient.isBlank() || body.isBlank()) return
+        val address = SmsSender.parseRecipients(recipient).firstOrNull().orEmpty()
+        val pendingId = -(pendingIdCounter.incrementAndGet())
+        val pending = SmsMessage(
+            id = pendingId,
+            address = address,
+            body = body,
+            timestamp = System.currentTimeMillis(),
+            type = Telephony.Sms.MESSAGE_TYPE_SENT,
+            read = true,
+            status = SendStatus.SENDING,
+        )
+        _pendingSends.value = _pendingSends.value + pending
         viewModelScope.launch {
             val app = getApplication<Application>()
             val ok = withContext(Dispatchers.IO) { SmsSender.send(app, recipient, body, subId) }
             if (ok) {
                 _events.value = UiEvent.Message("Message sent")
-                openConversation(SmsSender.parseRecipients(recipient).firstOrNull().orEmpty())
+                // Update the stub to SENT so the checkmark shows while the
+                // provider reload runs.
+                _pendingSends.value = _pendingSends.value.map {
+                    if (it.id == pendingId) it.copy(status = SendStatus.SENT) else it
+                }
+                // Reload the thread so the real provider row appears, then drop the stub.
+                openConversation(address)
+                delay(300)
+                _pendingSends.value = _pendingSends.value.filterNot { it.id == pendingId }
             } else {
                 _events.value = UiEvent.Message("Unable to send message")
+                _pendingSends.value = _pendingSends.value.map {
+                    if (it.id == pendingId) it.copy(status = SendStatus.FAILED) else it
+                }
             }
+        }
+    }
+
+    /** Retries a failed pending send by its temp id. */
+    fun retrySend(pendingId: Long, recipient: String, body: String, subId: Int = 0) {
+        _pendingSends.value = _pendingSends.value.filterNot { it.id == pendingId }
+        sendSms(recipient, body, subId)
+    }
+
+    /** Removes a pending send stub (dismissed failed message, etc.). */
+    fun deletePendingSend(pendingId: Long) {
+        _pendingSends.value = _pendingSends.value.filterNot { it.id == pendingId }
+    }
+
+    /**
+     * Deletes a single message from the system provider (or removes a pending
+     * send stub when the id is negative), then refreshes the open thread.
+     */
+    fun deleteMessage(message: SmsMessage) {
+        if (message.id < 0L) {
+            deletePendingSend(message.id)
+            return
+        }
+        val app = appContext
+        viewModelScope.launch {
+            withContext(Dispatchers.IO) { SmsInbox.deleteById(app, message.id) }
+            refreshOpenThread()
+            refreshConversations(force = true)
+        }
+        _events.value = UiEvent.Message("Message deleted")
+    }
+
+    /** Deletes every message in the conversation with [address], then refreshes the list. */
+    fun deleteConversation(address: String) {
+        val threadId = _conversations.value.firstOrNull { it.address == address }?.threadId ?: 0L
+        val app = appContext
+        viewModelScope.launch {
+            if (threadId > 0L) {
+                withContext(Dispatchers.IO) { SmsThreads.deleteThread(app, threadId) }
+            }
+            if (openAddress == address) {
+                _conversation.value = emptyList()
+                _pendingSends.value = emptyList()
+            }
+            threadCache.evict(address)
+            refreshConversations(force = true)
+        }
+        _events.value = UiEvent.Message("Conversation deleted")
+    }
+
+    /** Marks all incoming messages in the conversation with [address] as unread. */
+    fun markConversationUnread(address: String) {
+        val threadId = _conversations.value.firstOrNull { it.address == address }?.threadId ?: 0L
+        if (threadId <= 0L) return
+        val app = appContext
+        viewModelScope.launch {
+            withContext(Dispatchers.IO) { SmsThreads.markThreadUnread(app, threadId) }
+            refreshConversations(force = true)
         }
     }
 

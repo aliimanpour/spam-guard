@@ -86,6 +86,17 @@ object SmsInbox {
         false
     }
 
+    /** Deletes a single message by its provider row id. Default-SMS-app only. */
+    fun deleteById(context: Context, id: Long): Boolean = try {
+        context.contentResolver.delete(
+            Telephony.Sms.CONTENT_URI,
+            "${Telephony.Sms._ID} = ?",
+            arrayOf(id.toString()),
+        ) > 0
+    } catch (_: Exception) {
+        false
+    }
+
     /** True when this app currently holds the default SMS role. */
     fun isDefaultSmsApp(context: Context): Boolean = try {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {

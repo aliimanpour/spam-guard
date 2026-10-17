@@ -45,6 +45,10 @@ fun pickDateTime(
 fun formatDateTime(millis: Long): String =
     SimpleDateFormat("MMM d, yyyy · HH:mm", Locale.getDefault()).format(Date(millis))
 
+/** Formats an epoch millis as a short time such as "14:05". */
+fun formatTime(millis: Long): String =
+    SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date(millis))
+
 /** Formats an epoch millis as a day label such as "Today", "Yesterday" or "Aug 3, 2026". */
 fun formatDay(millis: Long): String {
     val now = Calendar.getInstance()

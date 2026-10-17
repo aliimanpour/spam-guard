@@ -225,6 +225,7 @@ fun AppRoot(
                     address = recipient.takeIf { it.isNotBlank() },
                     initialBody = body,
                     onBack = { navController.popBackStack() },
+                    onForward = { newBody -> navController.navigate(Routes.compose("", newBody)) },
                 )
             }
             composable(
@@ -236,6 +237,7 @@ fun AppRoot(
                     viewModel = viewModel,
                     address = address,
                     onBack = { navController.popBackStack() },
+                    onForward = { newBody -> navController.navigate(Routes.compose("", newBody)) },
                 )
             }
             composable(

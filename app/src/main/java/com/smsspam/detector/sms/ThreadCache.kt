@@ -48,6 +48,10 @@ class ThreadCache(
     @Synchronized
     fun clear() = entries.clear()
 
+    /** Removes the cached window for [address] (e.g. after the thread is deleted). */
+    @Synchronized
+    fun evict(address: String) { entries.remove(address) }
+
     companion object {
         // Large enough that scrolling a long list — where every visible row is
         // prefetched — still leaves recently opened threads cached.

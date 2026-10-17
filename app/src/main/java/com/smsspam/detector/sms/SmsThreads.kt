@@ -9,6 +9,9 @@ import android.provider.BaseColumns
 import android.provider.Telephony
 import androidx.core.content.ContextCompat
 
+/** Delivery state of an outgoing message, for the sending-status icon in the UI. */
+enum class SendStatus { SENDING, SENT, FAILED }
+
 /** A single message shown inside a conversation thread. */
 data class SmsMessage(
     val id: Long = 0L,
@@ -17,8 +20,19 @@ data class SmsMessage(
     val timestamp: Long = 0L,
     val type: Int = Telephony.Sms.MESSAGE_TYPE_INBOX,
     val read: Boolean = false,
+    val status: SendStatus = SendStatus.SENT,
 ) {
     val isIncoming: Boolean get() = type == Telephony.Sms.MESSAGE_TYPE_INBOX
+
+    /** Maps a provider message type to a send status for outgoing messages. */
+    companion object {
+        fun statusForType(type: Int): SendStatus = when (type) {
+            Telephony.Sms.MESSAGE_TYPE_OUTBOX,
+            Telephony.Sms.MESSAGE_TYPE_QUEUED -> SendStatus.SENDING
+            Telephony.Sms.MESSAGE_TYPE_FAILED -> SendStatus.FAILED
+            else -> SendStatus.SENT
+        }
+    }
 }
 
 /** One row in the conversation list: the latest message from an address. */
@@ -160,13 +174,16 @@ object SmsThreads {
                 val readIdx = cursor.getColumnIndexOrThrow(Telephony.Sms.READ)
                 // Stop one row past the page: the surplus proves more exist.
                 while (cursor.moveToNext() && result.size < limit + 1) {
+                    val type = cursor.getInt(typeIdx)
                     result += SmsMessage(
                         id = cursor.getLong(idIdx),
                         address = cursor.getString(addressIdx) ?: "",
                         body = cursor.getString(bodyIdx) ?: "",
                         timestamp = cursor.getLong(dateIdx),
-                        type = cursor.getInt(typeIdx),
+                        type = type,
                         read = cursor.getInt(readIdx) == 1,
+                        status = if (type == Telephony.Sms.MESSAGE_TYPE_INBOX) SendStatus.SENT
+                            else SmsMessage.statusForType(type),
                     )
                 }
             }
@@ -209,6 +226,34 @@ object SmsThreads {
             "${Telephony.Sms.THREAD_ID} = ? AND ${Telephony.Sms.TYPE} = ${Telephony.Sms.MESSAGE_TYPE_INBOX}",
             arrayOf(threadId.toString()),
         ) >= 0
+    } catch (_: Exception) {
+        false
+    }
+
+    /** Marks every incoming message of [threadId] as unread (best effort). */
+    fun markThreadUnread(context: Context, threadId: Long): Boolean = try {
+        val values = ContentValues().apply { put(Telephony.Sms.READ, 0) }
+        context.contentResolver.update(
+            Telephony.Sms.CONTENT_URI,
+            values,
+            "${Telephony.Sms.THREAD_ID} = ? AND ${Telephony.Sms.TYPE} = ${Telephony.Sms.MESSAGE_TYPE_INBOX}",
+            arrayOf(threadId.toString()),
+        ) >= 0
+    } catch (_: Exception) {
+        false
+    }
+
+    /**
+     * Deletes every SMS in a thread. Only the default SMS app may delete from
+     * the provider, so failures are swallowed on purpose. Returns true when at
+     * least one row was removed.
+     */
+    fun deleteThread(context: Context, threadId: Long): Boolean = try {
+        context.contentResolver.delete(
+            Telephony.Sms.CONTENT_URI,
+            "${Telephony.Sms.THREAD_ID} = ?",
+            arrayOf(threadId.toString()),
+        ) > 0
     } catch (_: Exception) {
         false
     }

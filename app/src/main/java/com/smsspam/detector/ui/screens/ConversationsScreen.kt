@@ -2,6 +2,9 @@
 
 package com.smsspam.detector.ui.screens
 
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
@@ -22,14 +25,22 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.Phone
 import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExtendedFloatingActionButton
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -84,6 +95,7 @@ fun ConversationsScreen(
     val permissionStatus = rememberPermissionStatus()
     var query by remember { mutableStateOf("") }
     var showDefaultDialog by remember { mutableStateOf(false) }
+    var deleteAddress by remember { mutableStateOf<String?>(null) }
 
 val permissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
@@ -229,6 +241,10 @@ val permissionLauncher = rememberLauncherForActivityResult(
                             unread = conversation.unreadCount,
                             query = query,
                             onClick = { onOpenConversation(conversation.address) },
+                            onDelete = { deleteAddress = conversation.address },
+                            onMarkUnread = { viewModel.markConversationUnread(conversation.address) },
+                            onCall = { dialNumber(context, conversation.address) },
+                            onCopyNumber = { copyText(context, conversation.address) },
                         )
                     }
                 }
@@ -246,6 +262,41 @@ val permissionLauncher = rememberLauncherForActivityResult(
             },
         )
     }
+
+    deleteAddress?.let { address ->
+        AlertDialog(
+            onDismissRequest = { deleteAddress = null },
+            icon = { Icon(Icons.Filled.Delete, contentDescription = null) },
+            title = { Text("Delete conversation") },
+            text = { Text("Delete all messages from $address? This cannot be undone.") },
+            confirmButton = {
+                TextButton(onClick = {
+                    deleteAddress = null
+                    viewModel.deleteConversation(address)
+                }) { Text("Delete") }
+            },
+            dismissButton = {
+                TextButton(onClick = { deleteAddress = null }) { Text("Cancel") }
+            },
+        )
+    }
+}
+
+/** Opens the system dialer with [number] pre-filled (best effort). */
+private fun dialNumber(context: Context, number: String) {
+    try {
+        context.startActivity(
+            android.content.Intent(android.content.Intent.ACTION_DIAL, android.net.Uri.parse("tel:$number"))
+        )
+    } catch (_: Exception) {
+        // No dialer app available.
+    }
+}
+
+/** Copies [text] to the system clipboard. */
+private fun copyText(context: Context, text: String) {
+    val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+    clipboard.setPrimaryClip(ClipData.newPlainText("Copied text", text))
 }
 
 @Composable
@@ -257,7 +308,12 @@ private fun ConversationRow(
     unread: Int,
     query: String,
     onClick: () -> Unit,
+    onDelete: () -> Unit,
+    onMarkUnread: () -> Unit,
+    onCall: () -> Unit,
+    onCopyNumber: () -> Unit,
 ) {
+    var menuOpen by remember { mutableStateOf(false) }
     // Unread conversations get a slightly stronger container so the eye picks
     // them out before the badge is even noticed.
     Card(
@@ -321,6 +377,43 @@ private fun ConversationRow(
                         Spacer(Modifier.width(8.dp))
                         UnreadBadge(unread)
                     }
+                }
+            }
+            Box {
+                IconButton(
+                    onClick = { menuOpen = true },
+                    modifier = Modifier.size(40.dp),
+                ) {
+                    Icon(
+                        Icons.Filled.MoreVert,
+                        contentDescription = "Options",
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                DropdownMenu(
+                    expanded = menuOpen,
+                    onDismissRequest = { menuOpen = false },
+                ) {
+                    DropdownMenuItem(
+                        text = { Text("Call") },
+                        leadingIcon = { Icon(Icons.Filled.Phone, contentDescription = null) },
+                        onClick = { menuOpen = false; onCall() },
+                    )
+                    DropdownMenuItem(
+                        text = { Text("Mark as unread") },
+                        onClick = { menuOpen = false; onMarkUnread() },
+                    )
+                    DropdownMenuItem(
+                        text = { Text("Copy number") },
+                        leadingIcon = { Icon(Icons.Filled.ContentCopy, contentDescription = null) },
+                        onClick = { menuOpen = false; onCopyNumber() },
+                    )
+                    HorizontalDivider()
+                    DropdownMenuItem(
+                        text = { Text("Delete") },
+                        leadingIcon = { Icon(Icons.Filled.Delete, contentDescription = null) },
+                        onClick = { menuOpen = false; onDelete() },
+                    )
                 }
             }
         }

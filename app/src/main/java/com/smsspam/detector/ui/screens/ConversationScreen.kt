@@ -1,10 +1,16 @@
-@file:OptIn(ExperimentalMaterial3Api::class)
+@file:OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 
 package com.smsspam.detector.ui.screens
 
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
+import android.content.Intent
+import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.foundation.clickable
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -16,6 +22,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
@@ -26,8 +33,14 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.ErrorOutline
+import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.Phone
 import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material.icons.filled.SimCard
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Badge
 import androidx.compose.material3.BadgedBox
 import androidx.compose.material3.Card
@@ -46,6 +59,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
@@ -66,6 +80,7 @@ import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.smsspam.detector.contacts.Recipient
 import com.smsspam.detector.contacts.RecipientDirectory
+import com.smsspam.detector.sms.SendStatus
 import com.smsspam.detector.sms.SimSubscription
 import com.smsspam.detector.sms.SmsMessage
 import com.smsspam.detector.ui.AppViewModel
@@ -75,8 +90,8 @@ import com.smsspam.detector.ui.components.EmptyState
 import com.smsspam.detector.ui.components.HighlightedText
 import com.smsspam.detector.ui.components.SetDefaultSmsDialog
 import com.smsspam.detector.ui.components.defaultSmsRoleIntent
-import com.smsspam.detector.ui.components.formatDateTime
 import com.smsspam.detector.ui.components.formatDay
+import com.smsspam.detector.ui.components.formatTime
 import com.smsspam.detector.ui.components.isRtl
 import com.smsspam.detector.ui.components.openDefaultAppsSettings
 import com.smsspam.detector.ui.components.pickDateTime
@@ -92,6 +107,7 @@ fun ConversationScreen(
     address: String?,
     initialBody: String = "",
     onBack: () -> Unit,
+    onForward: (String) -> Unit = {},
 ) {
     val context = LocalContext.current
     val messages by viewModel.conversation.collectAsStateWithLifecycle()
@@ -105,6 +121,10 @@ fun ConversationScreen(
     var recipient by remember(address) { mutableStateOf(address.orEmpty()) }
     var body by remember(initialBody) { mutableStateOf(initialBody) }
     var showDefaultDialog by remember { mutableStateOf(false) }
+    var showDeleteDialog by remember { mutableStateOf(false) }
+    // Message whose long-press menu is open, or null.
+    var menuMessage by remember { mutableStateOf<SmsMessage?>(null) }
+    var showConversationMenu by remember { mutableStateOf(false) }
     // User's SIM choice for this open; null keeps the remembered per-conversation SIM.
     var simOverride by remember(address) { mutableStateOf<Int?>(null) }
     val chosenSubId = simOverride ?: viewModel.selectedSubId(address.orEmpty())
@@ -142,6 +162,11 @@ fun ConversationScreen(
     val displayTitle = remember(recipient, contacts) { viewModel.contactName(recipient) ?: recipient }
     val canSend = recipient.isNotBlank() && body.isNotBlank()
 
+    val copyText: (String) -> Unit = { text ->
+        val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+        clipboard.setPrimaryClip(ClipData.newPlainText("Message", text))
+    }
+
     Scaffold(
         modifier = Modifier
             .fillMaxSize()
@@ -176,6 +201,49 @@ fun ConversationScreen(
                 navigationIcon = {
                     IconButton(onClick = onBack) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                    }
+                },
+                actions = {
+                    if (!isNew) {
+                        Box {
+                            IconButton(onClick = { showConversationMenu = true }) {
+                                Icon(Icons.Filled.MoreVert, contentDescription = "More options")
+                            }
+                            DropdownMenu(
+                                expanded = showConversationMenu,
+                                onDismissRequest = { showConversationMenu = false },
+                            ) {
+                                DropdownMenuItem(
+                                    text = { Text("Call") },
+                                    leadingIcon = { Icon(Icons.Filled.Phone, contentDescription = null) },
+                                    onClick = {
+                                        showConversationMenu = false
+                                        try {
+                                            context.startActivity(
+                                                Intent(Intent.ACTION_DIAL, Uri.parse("tel:$recipient"))
+                                            )
+                                        } catch (_: Exception) { }
+                                    },
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("Copy number") },
+                                    leadingIcon = { Icon(Icons.Filled.ContentCopy, contentDescription = null) },
+                                    onClick = {
+                                        showConversationMenu = false
+                                        copyText(recipient)
+                                    },
+                                )
+                                HorizontalDivider()
+                                DropdownMenuItem(
+                                    text = { Text("Delete conversation") },
+                                    leadingIcon = { Icon(Icons.Filled.Delete, contentDescription = null) },
+                                    onClick = {
+                                        showConversationMenu = false
+                                        showDeleteDialog = true
+                                    },
+                                )
+                            }
+                        }
                     }
                 },
             )
@@ -325,7 +393,19 @@ fun ConversationScreen(
                             verticalArrangement = Arrangement.spacedBy(6.dp),
                         ) {
                             if (showDate) DayChip(formatDay(message.timestamp))
-                            MessageBubble(message)
+                            MessageBubble(
+                                message = message,
+                                onCopy = { copyText(message.body) },
+                                onForward = { onForward(message.body) },
+                                onShare = { shareText(context, message.body) },
+                                onRetry = {
+                                    viewModel.retrySend(message.id, message.address, message.body, chosenSubId)
+                                },
+                                onDelete = { viewModel.deleteMessage(message) },
+                                onMenuDismiss = { menuMessage = null },
+                                menuOpen = menuMessage?.id == message.id,
+                                onLongClick = { menuMessage = message },
+                            )
                         }
                     }
                     // With reverseLayout, items declared after the messages sit
@@ -361,6 +441,40 @@ fun ConversationScreen(
                 if (intent != null) roleLauncher.launch(intent) else openDefaultAppsSettings(context)
             },
         )
+    }
+
+    if (showDeleteDialog) {
+        AlertDialog(
+            onDismissRequest = { showDeleteDialog = false },
+            icon = { Icon(Icons.Filled.Delete, contentDescription = null) },
+            title = { Text("Delete conversation") },
+            text = {
+                Text("Delete all messages in this conversation? This cannot be undone.")
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    showDeleteDialog = false
+                    viewModel.deleteConversation(recipient)
+                    onBack()
+                }) { Text("Delete") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showDeleteDialog = false }) { Text("Cancel") }
+            },
+        )
+    }
+}
+
+/** Shares [text] via the Android share sheet (best effort). */
+private fun shareText(context: Context, text: String) {
+    try {
+        val intent = Intent(Intent.ACTION_SEND).apply {
+            type = "text/plain"
+            putExtra(Intent.EXTRA_TEXT, text)
+        }
+        context.startActivity(Intent.createChooser(intent, "Share"))
+    } catch (_: Exception) {
+        // No app to handle the share intent.
     }
 }
 
@@ -416,7 +530,7 @@ private fun RecipientSuggestionRow(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clickable(onClick = onClick)
+            .combinedClickable(onClick = onClick)
             .padding(horizontal = 12.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(12.dp),
@@ -494,8 +608,22 @@ private fun LoadOlderTrigger(loadedCount: Int, onLoad: () -> Unit) {
     Box(Modifier.fillMaxWidth())
 }
 
+/**
+ * A single message bubble with a tail, sending-status icon, and a long-press
+ * menu (copy, forward, share, delete, retry on failure).
+ */
 @Composable
-private fun MessageBubble(message: SmsMessage) {
+private fun MessageBubble(
+    message: SmsMessage,
+    onCopy: () -> Unit,
+    onForward: () -> Unit,
+    onShare: () -> Unit,
+    onRetry: () -> Unit,
+    onDelete: () -> Unit,
+    onMenuDismiss: () -> Unit,
+    menuOpen: Boolean,
+    onLongClick: () -> Unit,
+) {
     val incoming = message.isIncoming
     val bubbleShape = RoundedCornerShape(
         topStart = 18.dp,
@@ -516,7 +644,12 @@ private fun MessageBubble(message: SmsMessage) {
                     MaterialTheme.colorScheme.primaryContainer
                 },
                 shape = bubbleShape,
-                modifier = Modifier.widthIn(max = maxBubbleWidth),
+                modifier = Modifier
+                    .widthIn(max = maxBubbleWidth)
+                    .combinedClickable(
+                        onClick = {},
+                        onLongClick = onLongClick,
+                    ),
             ) {
                 // Lay the bubble's contents out in the text's own direction so
                 // Persian/Arabic messages read right-to-left (and the timestamp
@@ -529,16 +662,94 @@ private fun MessageBubble(message: SmsMessage) {
                         modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
                         verticalArrangement = Arrangement.spacedBy(2.dp),
                     ) {
-                        Text(message.body, style = MaterialTheme.typography.bodyMedium)
                         Text(
-                            text = formatDateTime(message.timestamp),
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.align(Alignment.End),
+                            text = message.body,
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = if (incoming) {
+                                MaterialTheme.colorScheme.onSurface
+                            } else {
+                                MaterialTheme.colorScheme.onPrimaryContainer
+                            },
                         )
+                        Row(
+                            modifier = Modifier.align(Alignment.End),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(4.dp),
+                        ) {
+                            Text(
+                                text = formatTime(message.timestamp),
+                                style = MaterialTheme.typography.labelSmall,
+                                color = if (incoming) {
+                                    MaterialTheme.colorScheme.onSurfaceVariant
+                                } else {
+                                    MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.7f)
+                                },
+                            )
+                            if (!incoming) {
+                                SendStatusIcon(message.status, onRetry)
+                            }
+                        }
                     }
                 }
             }
         }
+    }
+    DropdownMenu(
+        expanded = menuOpen,
+        onDismissRequest = onMenuDismiss,
+    ) {
+        DropdownMenuItem(
+            text = { Text("Copy") },
+            leadingIcon = { Icon(Icons.Filled.ContentCopy, contentDescription = null) },
+            onClick = { onMenuDismiss(); onCopy() },
+        )
+        DropdownMenuItem(
+            text = { Text("Forward") },
+            leadingIcon = { Icon(Icons.AutoMirrored.Filled.Send, contentDescription = null) },
+            onClick = { onMenuDismiss(); onForward() },
+        )
+        DropdownMenuItem(
+            text = { Text("Share") },
+            leadingIcon = { Icon(Icons.Filled.ContentCopy, contentDescription = null) },
+            onClick = { onMenuDismiss(); onShare() },
+        )
+        if (message.status == SendStatus.FAILED) {
+            DropdownMenuItem(
+                text = { Text("Retry") },
+                leadingIcon = { Icon(Icons.Filled.Schedule, contentDescription = null) },
+                onClick = { onMenuDismiss(); onRetry() },
+            )
+        }
+        HorizontalDivider()
+        DropdownMenuItem(
+            text = { Text("Delete") },
+            leadingIcon = { Icon(Icons.Filled.Delete, contentDescription = null) },
+            onClick = { onMenuDismiss(); onDelete() },
+        )
+    }
+}
+
+/** Small status icon for outgoing messages: clock (sending), check (sent), error (failed). */
+@Composable
+private fun SendStatusIcon(status: SendStatus, onRetry: () -> Unit) {
+    when (status) {
+        SendStatus.SENDING -> Icon(
+            imageVector = Icons.Filled.Schedule,
+            contentDescription = "Sending",
+            modifier = Modifier.size(14.dp),
+            tint = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.7f),
+        )
+        SendStatus.SENT -> Icon(
+            imageVector = Icons.Filled.Check,
+            contentDescription = "Sent",
+            modifier = Modifier.size(14.dp),
+            tint = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.7f),
+        )
+        SendStatus.FAILED -> Icon(
+            imageVector = Icons.Filled.ErrorOutline,
+            contentDescription = "Failed",
+            modifier = Modifier.size(14.dp),
+            tint = MaterialTheme.colorScheme.error,
+        )
     }
 }
