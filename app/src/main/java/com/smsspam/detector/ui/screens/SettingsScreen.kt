@@ -227,12 +227,13 @@ fun SettingsScreen(viewModel: AppViewModel) {
             SectionTitle("Rules")
             InfoCard {
                 Text(
-                    "Restore the rules that ship with the app. Your custom rules are replaced.",
+                    "Restore Spam Protection, the built-in filters that ship with the app. " +
+                        "Your custom rules are kept.",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
-                OutlinedButton(onClick = { viewModel.resetRules() }, modifier = Modifier.padding(top = 8.dp)) {
-                    Text("Restore preset rules")
+                OutlinedButton(onClick = { viewModel.resetProtection() }, modifier = Modifier.padding(top = 8.dp)) {
+                    Text("Reset Spam Protection")
                 }
             }
 

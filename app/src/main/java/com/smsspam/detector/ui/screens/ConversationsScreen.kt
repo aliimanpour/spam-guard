@@ -1,13 +1,16 @@
-@file:OptIn(ExperimentalMaterial3Api::class)
+@file:OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 
 package com.smsspam.detector.ui.screens
 
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -24,9 +27,11 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Send
+import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.MarkEmailUnread
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Phone
 import androidx.compose.material.icons.filled.Schedule
@@ -36,6 +41,7 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -96,6 +102,16 @@ fun ConversationsScreen(
     var query by remember { mutableStateOf("") }
     var showDefaultDialog by remember { mutableStateOf(false) }
     var deleteAddress by remember { mutableStateOf<String?>(null) }
+    var selecting by remember { mutableStateOf(false) }
+    var selectedAddresses by remember { mutableStateOf<Set<String>>(emptySet()) }
+    var deleteSelectedDialog by remember { mutableStateOf(false) }
+
+    val clearSelection = {
+        selecting = false
+        selectedAddresses = emptySet()
+    }
+
+    BackHandler(enabled = selecting) { clearSelection() }
 
 val permissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
@@ -138,33 +154,74 @@ val permissionLauncher = rememberLauncherForActivityResult(
 
     Scaffold(
         topBar = {
-            TopAppBar(
-                title = {
-                    Column {
-                        Text("Messages", style = MaterialTheme.typography.titleLarge)
-                        Text(
-                            text = if (visible.isEmpty()) "No conversations" else "${visible.size} conversations",
-                            style = MaterialTheme.typography.labelMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
-                },
-                colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = MaterialTheme.colorScheme.surfaceContainer,
-                ),
-                actions = {
-                    IconButton(onClick = onOpenScheduled) {
-                        Icon(Icons.Filled.Schedule, contentDescription = "Scheduled messages")
-                    }
-                },
-            )
+            if (selecting) {
+                TopAppBar(
+                    navigationIcon = {
+                        IconButton(onClick = clearSelection) {
+                            Icon(Icons.Filled.Close, contentDescription = "Cancel selection")
+                        }
+                    },
+                    title = {
+                        Text(if (selectedAddresses.isEmpty()) "Select conversations" else "${selectedAddresses.size} selected")
+                    },
+                    colors = TopAppBarDefaults.topAppBarColors(
+                        containerColor = MaterialTheme.colorScheme.surfaceContainer,
+                    ),
+                    actions = {
+                        IconButton(
+                            onClick = {
+                                viewModel.markConversationsUnread(selectedAddresses)
+                                clearSelection()
+                            },
+                            enabled = selectedAddresses.isNotEmpty(),
+                        ) {
+                            Icon(Icons.Filled.MarkEmailUnread, contentDescription = "Mark as unread")
+                        }
+                        IconButton(
+                            onClick = { deleteSelectedDialog = true },
+                            enabled = selectedAddresses.isNotEmpty(),
+                        ) {
+                            Icon(Icons.Filled.Delete, contentDescription = "Delete conversations")
+                        }
+                    },
+                )
+            } else {
+                TopAppBar(
+                    title = {
+                        Column {
+                            Text("Messages", style = MaterialTheme.typography.titleLarge)
+                            Text(
+                                text = if (visible.isEmpty()) "No conversations" else "${visible.size} conversations",
+                                style = MaterialTheme.typography.labelMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    },
+                    colors = TopAppBarDefaults.topAppBarColors(
+                        containerColor = MaterialTheme.colorScheme.surfaceContainer,
+                    ),
+                    actions = {
+                        IconButton(onClick = {
+                            selecting = true
+                            selectedAddresses = emptySet()
+                        }) {
+                            Icon(Icons.Filled.CheckCircle, contentDescription = "Select conversations")
+                        }
+                        IconButton(onClick = onOpenScheduled) {
+                            Icon(Icons.Filled.Schedule, contentDescription = "Scheduled messages")
+                        }
+                    },
+                )
+            }
         },
         floatingActionButton = {
-            ExtendedFloatingActionButton(
-                onClick = onNewMessage,
-                icon = { Icon(Icons.AutoMirrored.Filled.Send, contentDescription = null) },
-                text = { Text("New message") },
-            )
+            if (!selecting) {
+                ExtendedFloatingActionButton(
+                    onClick = onNewMessage,
+                    icon = { Icon(Icons.AutoMirrored.Filled.Send, contentDescription = null) },
+                    text = { Text("New message") },
+                )
+            }
         },
     ) { padding ->
         Column(
@@ -240,7 +297,23 @@ val permissionLauncher = rememberLauncherForActivityResult(
                             timestamp = conversation.timestamp,
                             unread = conversation.unreadCount,
                             query = query,
-                            onClick = { onOpenConversation(conversation.address) },
+                            selecting = selecting,
+                            selected = conversation.address in selectedAddresses,
+                            onClick = {
+                                if (selecting) {
+                                    selectedAddresses = if (conversation.address in selectedAddresses) {
+                                        selectedAddresses - conversation.address
+                                    } else {
+                                        selectedAddresses + conversation.address
+                                    }
+                                } else {
+                                    onOpenConversation(conversation.address)
+                                }
+                            },
+                            onLongPress = {
+                                selecting = true
+                                selectedAddresses = selectedAddresses + conversation.address
+                            },
                             onDelete = { deleteAddress = conversation.address },
                             onMarkUnread = { viewModel.markConversationUnread(conversation.address) },
                             onCall = { dialNumber(context, conversation.address) },
@@ -280,6 +353,34 @@ val permissionLauncher = rememberLauncherForActivityResult(
             },
         )
     }
+
+    if (deleteSelectedDialog) {
+        AlertDialog(
+            onDismissRequest = { deleteSelectedDialog = false },
+            icon = { Icon(Icons.Filled.Delete, contentDescription = null) },
+            title = { Text("Delete conversations") },
+            text = {
+                Text(
+                    "Delete ${selectedAddresses.size} selected " +
+                        if (selectedAddresses.size == 1) {
+                            "conversation? This cannot be undone."
+                        } else {
+                            "conversations? This cannot be undone."
+                        }
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    deleteSelectedDialog = false
+                    viewModel.deleteConversations(selectedAddresses)
+                    clearSelection()
+                }) { Text("Delete") }
+            },
+            dismissButton = {
+                TextButton(onClick = { deleteSelectedDialog = false }) { Text("Cancel") }
+            },
+        )
+    }
 }
 
 /** Opens the system dialer with [number] pre-filled (best effort). */
@@ -307,7 +408,10 @@ private fun ConversationRow(
     timestamp: Long,
     unread: Int,
     query: String,
+    selecting: Boolean,
+    selected: Boolean,
     onClick: () -> Unit,
+    onLongPress: () -> Unit,
     onDelete: () -> Unit,
     onMarkUnread: () -> Unit,
     onCall: () -> Unit,
@@ -317,14 +421,18 @@ private fun ConversationRow(
     // Unread conversations get a slightly stronger container so the eye picks
     // them out before the badge is even noticed.
     Card(
-        onClick = onClick,
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier
+            .fillMaxWidth()
+            .combinedClickable(
+                onClick = onClick,
+                onLongClick = onLongPress,
+            ),
         shape = RoundedCornerShape(20.dp),
         colors = CardDefaults.cardColors(
-            containerColor = if (unread > 0) {
-                MaterialTheme.colorScheme.surfaceContainerHigh
-            } else {
-                MaterialTheme.colorScheme.surfaceContainerLow
+            containerColor = when {
+                selected -> MaterialTheme.colorScheme.secondaryContainer
+                unread > 0 -> MaterialTheme.colorScheme.surfaceContainerHigh
+                else -> MaterialTheme.colorScheme.surfaceContainerLow
             },
         ),
         elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
@@ -335,6 +443,13 @@ private fun ConversationRow(
                 .padding(horizontal = 14.dp, vertical = 12.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
+            if (selecting) {
+                Checkbox(
+                    checked = selected,
+                    onCheckedChange = { onClick() },
+                )
+                Spacer(Modifier.width(4.dp))
+            }
             ContactAvatar(label = name)
             Spacer(Modifier.width(12.dp))
             Column(
@@ -379,41 +494,43 @@ private fun ConversationRow(
                     }
                 }
             }
-            Box {
-                IconButton(
-                    onClick = { menuOpen = true },
-                    modifier = Modifier.size(40.dp),
-                ) {
-                    Icon(
-                        Icons.Filled.MoreVert,
-                        contentDescription = "Options",
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-                DropdownMenu(
-                    expanded = menuOpen,
-                    onDismissRequest = { menuOpen = false },
-                ) {
-                    DropdownMenuItem(
-                        text = { Text("Call") },
-                        leadingIcon = { Icon(Icons.Filled.Phone, contentDescription = null) },
-                        onClick = { menuOpen = false; onCall() },
-                    )
-                    DropdownMenuItem(
-                        text = { Text("Mark as unread") },
-                        onClick = { menuOpen = false; onMarkUnread() },
-                    )
-                    DropdownMenuItem(
-                        text = { Text("Copy number") },
-                        leadingIcon = { Icon(Icons.Filled.ContentCopy, contentDescription = null) },
-                        onClick = { menuOpen = false; onCopyNumber() },
-                    )
-                    HorizontalDivider()
-                    DropdownMenuItem(
-                        text = { Text("Delete") },
-                        leadingIcon = { Icon(Icons.Filled.Delete, contentDescription = null) },
-                        onClick = { menuOpen = false; onDelete() },
-                    )
+            if (!selecting) {
+                Box {
+                    IconButton(
+                        onClick = { menuOpen = true },
+                        modifier = Modifier.size(40.dp),
+                    ) {
+                        Icon(
+                            Icons.Filled.MoreVert,
+                            contentDescription = "Options",
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    DropdownMenu(
+                        expanded = menuOpen,
+                        onDismissRequest = { menuOpen = false },
+                    ) {
+                        DropdownMenuItem(
+                            text = { Text("Call") },
+                            leadingIcon = { Icon(Icons.Filled.Phone, contentDescription = null) },
+                            onClick = { menuOpen = false; onCall() },
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Mark as unread") },
+                            onClick = { menuOpen = false; onMarkUnread() },
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Copy number") },
+                            leadingIcon = { Icon(Icons.Filled.ContentCopy, contentDescription = null) },
+                            onClick = { menuOpen = false; onCopyNumber() },
+                        )
+                        HorizontalDivider()
+                        DropdownMenuItem(
+                            text = { Text("Delete") },
+                            leadingIcon = { Icon(Icons.Filled.Delete, contentDescription = null) },
+                            onClick = { menuOpen = false; onDelete() },
+                        )
+                    }
                 }
             }
         }

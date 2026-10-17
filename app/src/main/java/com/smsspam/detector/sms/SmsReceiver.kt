@@ -44,7 +44,7 @@ class SmsReceiver : BroadcastReceiver() {
         // SMS_RECEIVED so a message is never processed twice.
         if (isReceived && isDefault) return
 
-        val rules = container.ruleRepository.rules.value
+        val rules = container.ruleRepository.matchingRules()
 
         // Multipart messages arrive as several PDUs from the same sender.
         val bySender = parts.groupBy { it.displayOriginatingAddress ?: it.originatingAddress ?: "Unknown" }

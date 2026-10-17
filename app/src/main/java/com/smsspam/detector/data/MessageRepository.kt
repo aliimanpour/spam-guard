@@ -50,6 +50,15 @@ class MessageRepository(context: Context) {
     fun updateStatus(id: String, status: QuarantineStatus): List<QuarantineMessage> =
         commit(_messages.value.map { if (it.id == id) it.copy(status = status) else it })
 
+    /** Applies per-message statuses in a single write (used by bulk actions). */
+    @Synchronized
+    fun updateStatuses(statuses: Map<String, QuarantineStatus>): List<QuarantineMessage> =
+        commit(
+            _messages.value.map { message ->
+                statuses[message.id]?.let { message.copy(status = it) } ?: message
+            }
+        )
+
     @Synchronized
     fun markRead(id: String, read: Boolean = true): List<QuarantineMessage> =
         commit(_messages.value.map { if (it.id == id) it.copy(read = read) else it })
@@ -57,6 +66,11 @@ class MessageRepository(context: Context) {
     @Synchronized
     fun delete(id: String): List<QuarantineMessage> =
         commit(_messages.value.filterNot { it.id == id })
+
+    /** Deletes several messages in a single write (used by multi-select). */
+    @Synchronized
+    fun deleteAll(ids: Set<String>): List<QuarantineMessage> =
+        commit(_messages.value.filterNot { it.id in ids })
 
     @Synchronized
     fun clearAll(): List<QuarantineMessage> = commit(emptyList())

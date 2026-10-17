@@ -22,6 +22,48 @@ class RuleRepository(context: Context) {
     private val _rules = MutableStateFlow(loadOrDefaults())
     val rules: StateFlow<List<Rule>> = _rules.asStateFlow()
 
+    /**
+     * Master switch for the built-in presets. The individual preset rules keep
+     * their own configuration; this flag is what the single "Spam Protection"
+     * row in the Rules screen controls.
+     */
+    private val _protectionEnabled =
+        MutableStateFlow(metaPrefs.getBoolean(KEY_PROTECTION_ENABLED, true))
+    val protectionEnabled: StateFlow<Boolean> = _protectionEnabled.asStateFlow()
+
+    /**
+     * Rules the matcher should evaluate. Built-in block presets are skipped
+     * while Spam Protection is off, but the built-in allow rule (verification
+     * codes) stays active so an OTP is never blocked by a custom rule.
+     */
+    fun matchingRules(): List<Rule> {
+        val stored = _rules.value
+        if (_protectionEnabled.value) return stored
+        return stored.map { rule ->
+            if (rule.builtin && rule.action == RuleAction.BLOCK) rule.copy(enabled = false) else rule
+        }
+    }
+
+    /** Turns the whole built-in preset pack on or off. */
+    @Synchronized
+    fun setProtectionEnabled(enabled: Boolean) {
+        _protectionEnabled.value = enabled
+        metaPrefs.edit().putBoolean(KEY_PROTECTION_ENABLED, enabled).apply()
+    }
+
+    /**
+     * Replaces the built-in presets with their defaults while keeping the
+     * user's custom rules, and re-enables Spam Protection.
+     */
+    @Synchronized
+    fun resetPresetsKeepingCustom(): List<Rule> {
+        val custom = _rules.value.filterNot { it.builtin }
+        val merged = custom + defaultRules()
+        save(merged)
+        setProtectionEnabled(true)
+        return merged
+    }
+
     private fun loadOrDefaults(): List<Rule> {
         val stored = store.read().map { Rule.fromJson(it) }
         if (stored.isEmpty()) {
@@ -52,14 +94,7 @@ class RuleRepository(context: Context) {
     fun importRules(rules: List<Rule>) {
         save(mergePresets(rules))
         metaPrefs.edit().putInt(KEY_PRESET_VERSION, PRESET_VERSION).apply()
-    }
-
-    /** Reset to the built-in presets. */
-    @Synchronized
-    fun resetToDefaults(): List<Rule> {
-        val defaults = defaultRules()
-        save(defaults)
-        return defaults
+        setProtectionEnabled(true)
     }
 
     /** Appends every built-in preset (by id) that [rules] does not already have. */
@@ -168,5 +203,6 @@ class RuleRepository(context: Context) {
         const val PRESET_VERSION = 2
 
         private const val KEY_PRESET_VERSION = "preset_version"
+        private const val KEY_PROTECTION_ENABLED = "protection_enabled"
     }
 }

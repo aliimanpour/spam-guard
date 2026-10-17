@@ -188,6 +188,9 @@ fun AppRoot(
                 QuarantineScreen(
                     viewModel = viewModel,
                     snackbarHostState = snackbarHostState,
+                    onOpenConversation = { address ->
+                        navController.navigate(Routes.conversation(address))
+                    },
                 )
             }
             composable(Routes.RULES) {

@@ -75,6 +75,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     /** Live, shared with the SMS receiver so the UI never goes stale. */
     val rules: StateFlow<List<Rule>> = container.ruleRepository.rules
+
+    /** Master switch for the built-in preset pack shown as "Spam Protection". */
+    val protectionEnabled: StateFlow<Boolean> = container.ruleRepository.protectionEnabled
     val messages: StateFlow<List<QuarantineMessage>> = container.messageRepository.messages
     val scheduled: StateFlow<List<ScheduledMessage>> = container.scheduleRepository.scheduled
 
@@ -191,9 +194,17 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         container.ruleRepository.save(rules.value.map { if (it.id == id) it.copy(enabled = enabled) else it })
     }
 
-    fun resetRules() {
-        container.ruleRepository.resetToDefaults()
-        _events.value = UiEvent.Message("Preset rules restored")
+    fun setProtectionEnabled(enabled: Boolean) {
+        container.ruleRepository.setProtectionEnabled(enabled)
+        _events.value = UiEvent.Message(
+            if (enabled) "Spam Protection enabled" else "Spam Protection disabled"
+        )
+    }
+
+    /** Restores the built-in preset pack without touching custom rules. */
+    fun resetProtection() {
+        container.ruleRepository.resetPresetsKeepingCustom()
+        _events.value = UiEvent.Message("Spam Protection reset")
     }
 
     // --- Messages ----------------------------------------------------------
@@ -220,6 +231,59 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     fun deleteMessage(id: String) {
         container.messageRepository.delete(id)
+    }
+
+    /** Bulk variant of [markNotSpam] used by multi-select. */
+    fun markNotSpam(messages: List<QuarantineMessage>) {
+        if (messages.isEmpty()) return
+        viewModelScope.launch {
+            val app = getApplication<Application>()
+            val statuses = withContext(Dispatchers.IO) {
+                messages.associate { message ->
+                    message.id to if (restoreToInbox(app, message)) {
+                        QuarantineStatus.RESTORED
+                    } else {
+                        QuarantineStatus.NOT_SPAM
+                    }
+                }
+            }
+            container.messageRepository.updateStatuses(statuses)
+            val restored = statuses.values.count { it == QuarantineStatus.RESTORED }
+            val count = messages.size
+            _events.value = UiEvent.Message(
+                when {
+                    restored == count -> "Restored $count messages to the Messages app"
+                    restored == 0 -> "Marked $count messages as not spam"
+                    else -> "Restored $restored · marked ${count - restored} as not spam"
+                }
+            )
+        }
+    }
+
+    /** Bulk variant of [restore] used by multi-select. */
+    fun restore(messages: List<QuarantineMessage>) {
+        if (messages.isEmpty()) return
+        viewModelScope.launch {
+            val app = getApplication<Application>()
+            val restored = withContext(Dispatchers.IO) {
+                messages.count { restoreToInbox(app, it) }
+            }
+            container.messageRepository.updateStatuses(
+                messages.associate { it.id to QuarantineStatus.RESTORED }
+            )
+            val count = messages.size
+            _events.value = UiEvent.Message(
+                if (restored == count) "Restored $count messages to the Messages app"
+                else "Marked $count messages as restored"
+            )
+        }
+    }
+
+    /** Deletes several quarantined messages in one write. */
+    fun deleteMessages(ids: Set<String>) {
+        if (ids.isEmpty()) return
+        container.messageRepository.deleteAll(ids)
+        _events.value = UiEvent.Message("Deleted ${ids.size} messages")
     }
 
     fun clearAll() {
@@ -257,7 +321,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             val app = getApplication<Application>()
             val result = withContext(Dispatchers.IO) {
                 val inbox = SmsInbox.readInbox(app)
-                val rules = rules.value
+                val rules = container.ruleRepository.matchingRules()
                 val caught = mutableListOf<Pair<com.smsspam.detector.sms.InboxSms, QuarantineMessage>>()
                 inbox.forEach { sms ->
                     val match = RuleEngine.firstMatch(sms.sender, sms.body, rules) ?: return@forEach
@@ -650,6 +714,50 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             withContext(Dispatchers.IO) { SmsThreads.markThreadUnread(app, threadId) }
             refreshConversations(force = true)
+        }
+    }
+
+    /** Deletes several conversations in one pass, then refreshes the list. */
+    fun deleteConversations(addresses: Set<String>) {
+        if (addresses.isEmpty()) return
+        val targets = _conversations.value.filter { it.address in addresses }
+        val app = appContext
+        viewModelScope.launch {
+            withContext(Dispatchers.IO) {
+                targets.forEach { conversation ->
+                    if (conversation.threadId > 0L) {
+                        SmsThreads.deleteThread(app, conversation.threadId)
+                    }
+                }
+            }
+            if (openAddress in addresses) {
+                _conversation.value = emptyList()
+                _pendingSends.value = emptyList()
+            }
+            targets.forEach { threadCache.evict(it.address) }
+            refreshConversations(force = true)
+            _events.value = UiEvent.Message("Deleted ${targets.size} conversations")
+        }
+    }
+
+    /** Marks several conversations unread in one pass, then refreshes the list. */
+    fun markConversationsUnread(addresses: Set<String>) {
+        if (addresses.isEmpty()) return
+        val threadIds = _conversations.value
+            .filter { it.address in addresses }
+            .map { it.threadId }
+            .filter { it > 0L }
+        if (threadIds.isEmpty()) return
+        val app = appContext
+        viewModelScope.launch {
+            withContext(Dispatchers.IO) {
+                threadIds.forEach { SmsThreads.markThreadUnread(app, it) }
+            }
+            refreshConversations(force = true)
+            _events.value = UiEvent.Message(
+                if (threadIds.size == 1) "Marked 1 conversation unread"
+                else "Marked ${threadIds.size} conversations unread"
+            )
         }
     }
 

@@ -17,9 +17,11 @@ import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.RestartAlt
+import androidx.compose.material.icons.filled.Shield
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -47,7 +49,6 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.smsspam.detector.model.Rule
 import com.smsspam.detector.model.RuleAction
 import com.smsspam.detector.ui.AppViewModel
-import com.smsspam.detector.ui.components.EmptyState
 
 @Composable
 fun RulesScreen(
@@ -55,6 +56,8 @@ fun RulesScreen(
     onEditRule: (String) -> Unit,
 ) {
     val rules by viewModel.rules.collectAsStateWithLifecycle()
+    val protectionEnabled by viewModel.protectionEnabled.collectAsStateWithLifecycle()
+    val customRules = remember(rules) { rules.filterNot { it.builtin } }
     var menuOpen by remember { mutableStateOf(false) }
     var pendingDelete by remember { mutableStateOf<Rule?>(null) }
 
@@ -71,11 +74,11 @@ fun RulesScreen(
                     }
                     DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
                         DropdownMenuItem(
-                            text = { Text("Restore preset rules") },
+                            text = { Text("Reset Spam Protection") },
                             leadingIcon = { Icon(Icons.Filled.RestartAlt, contentDescription = null) },
                             onClick = {
                                 menuOpen = false
-                                viewModel.resetRules()
+                                viewModel.resetProtection()
                             },
                         )
                     }
@@ -96,24 +99,41 @@ fun RulesScreen(
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             item {
+                ProtectionCard(
+                    enabled = protectionEnabled,
+                    onToggle = { viewModel.setProtectionEnabled(it) },
+                )
+            }
+
+            item {
                 Text(
-                    "A message is treated as spam when it matches any enabled block rule, unless an " +
-                        "enabled allow rule (verification codes, for example) matches first. " +
-                        "Inside a rule you can combine conditions with AND or OR.",
+                    "A message is treated as spam when it matches Spam Protection or any enabled " +
+                        "custom rule. Verification codes always pass. Inside a custom rule you can " +
+                        "combine conditions with AND or OR.",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
 
-            if (rules.isEmpty()) {
+            item {
+                Text(
+                    "Custom rules",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold,
+                )
+            }
+
+            if (customRules.isEmpty()) {
                 item {
-                    EmptyState(
-                        title = "No rules yet",
-                        message = "Create a rule with one or more conditions (text, sender or regex) to start filtering SMS.",
+                    Text(
+                        "No custom rules yet. Add one with the + button to filter messages " +
+                            "beyond the built-in protection.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
             } else {
-                items(rules, key = { it.id }) { rule ->
+                items(customRules, key = { it.id }) { rule ->
                     RuleCard(
                         rule = rule,
                         onToggle = { viewModel.setRuleEnabled(rule.id, it) },
@@ -140,6 +160,62 @@ fun RulesScreen(
                 TextButton(onClick = { pendingDelete = null }) { Text("Cancel") }
             },
         )
+    }
+}
+
+/**
+ * The single entry that represents every built-in detection rule. The
+ * individual presets stay hidden and are only turned on/off through this
+ * master switch.
+ */
+@Composable
+private fun ProtectionCard(
+    enabled: Boolean,
+    onToggle: (Boolean) -> Unit,
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(
+            containerColor = if (enabled) {
+                MaterialTheme.colorScheme.primaryContainer
+            } else {
+                MaterialTheme.colorScheme.surfaceContainerHigh
+            },
+        ),
+    ) {
+        Row(
+            modifier = Modifier.padding(16.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Icon(
+                Icons.Filled.Shield,
+                contentDescription = null,
+                tint = if (enabled) {
+                    MaterialTheme.colorScheme.onPrimaryContainer
+                } else {
+                    MaterialTheme.colorScheme.onSurfaceVariant
+                },
+            )
+            Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Text(
+                    text = "Spam Protection",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                Text(
+                    text = "Built-in filters for prize spam, opt-out messages, links and more. " +
+                        "Verification codes are never blocked.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = if (enabled) {
+                        MaterialTheme.colorScheme.onPrimaryContainer
+                    } else {
+                        MaterialTheme.colorScheme.onSurfaceVariant
+                    },
+                )
+            }
+            Switch(checked = enabled, onCheckedChange = onToggle)
+        }
     }
 }
 
@@ -176,9 +252,6 @@ private fun RuleCard(
                     overflow = TextOverflow.Ellipsis,
                 )
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    if (rule.builtin) {
-                        AssistChip(onClick = { }, label = { Text("Preset") })
-                    }
                     if (rule.action == RuleAction.ALLOW) {
                         AssistChip(onClick = { }, label = { Text("Allow") })
                     }
