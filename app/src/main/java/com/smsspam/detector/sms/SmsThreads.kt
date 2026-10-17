@@ -41,9 +41,13 @@ object SmsThreads {
         Telephony.Sms.READ,
     )
 
-    /** Builds the conversation list from every SMS, newest thread first. */
+    /**
+     * Builds the conversation list from every SMS, newest thread first. Rows are
+     * aggregated in a single pass without allocating a [SmsMessage] per message,
+     * which keeps large inboxes cheap to refresh.
+     */
     fun readConversations(context: Context): List<SmsConversation> {
-        val grouped = LinkedHashMap<String, MutableList<SmsMessage>>()
+        val builders = HashMap<String, ConversationAggregate>()
         try {
             context.contentResolver.query(
                 Telephony.Sms.CONTENT_URI,
@@ -52,7 +56,6 @@ object SmsThreads {
                 null,
                 "${Telephony.Sms.DATE} DESC",
             )?.use { cursor ->
-                val idIdx = cursor.getColumnIndexOrThrow(Telephony.Sms._ID)
                 val addressIdx = cursor.getColumnIndexOrThrow(Telephony.Sms.ADDRESS)
                 val bodyIdx = cursor.getColumnIndexOrThrow(Telephony.Sms.BODY)
                 val dateIdx = cursor.getColumnIndexOrThrow(Telephony.Sms.DATE)
@@ -60,31 +63,43 @@ object SmsThreads {
                 val readIdx = cursor.getColumnIndexOrThrow(Telephony.Sms.READ)
                 while (cursor.moveToNext()) {
                     val address = cursor.getString(addressIdx) ?: "Unknown"
-                    val message = SmsMessage(
-                        id = cursor.getLong(idIdx),
-                        address = address,
-                        body = cursor.getString(bodyIdx) ?: "",
-                        timestamp = cursor.getLong(dateIdx),
-                        type = cursor.getInt(typeIdx),
-                        read = cursor.getInt(readIdx) == 1,
-                    )
-                    grouped.getOrPut(address) { mutableListOf() } += message
+                    val aggregate = builders.getOrPut(address) { ConversationAggregate() }
+                    aggregate.count++
+                    if (cursor.getInt(typeIdx) == Telephony.Sms.MESSAGE_TYPE_INBOX &&
+                        cursor.getInt(readIdx) != 1
+                    ) {
+                        aggregate.unread++
+                    }
+                    // Rows arrive newest-first, so the first row per address wins.
+                    if (!aggregate.hasLatest) {
+                        aggregate.hasLatest = true
+                        aggregate.timestamp = cursor.getLong(dateIdx)
+                        aggregate.snippet = cursor.getString(bodyIdx) ?: ""
+                    }
                 }
             }
         } catch (_: Exception) {
             return emptyList()
         }
 
-        return grouped.map { (address, messages) ->
-            val unread = messages.count { it.isIncoming && !it.read }
+        return builders.map { (address, aggregate) ->
             SmsConversation(
                 address = address,
-                snippet = messages.first().body,
-                timestamp = messages.first().timestamp,
-                messageCount = messages.size,
-                unreadCount = unread,
+                snippet = aggregate.snippet,
+                timestamp = aggregate.timestamp,
+                messageCount = aggregate.count,
+                unreadCount = aggregate.unread,
             )
         }.sortedByDescending { it.timestamp }
+    }
+
+    /** Mutable accumulator used while grouping inbox rows into threads. */
+    private class ConversationAggregate {
+        var count: Int = 0
+        var unread: Int = 0
+        var timestamp: Long = 0L
+        var snippet: String = ""
+        var hasLatest: Boolean = false
     }
 
     /** All messages exchanged with [address], oldest first. */

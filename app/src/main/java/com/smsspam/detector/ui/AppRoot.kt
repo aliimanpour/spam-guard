@@ -1,6 +1,8 @@
 package com.smsspam.detector.ui
 
 import android.net.Uri
+import androidx.compose.animation.EnterTransition
+import androidx.compose.animation.ExitTransition
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Rule
@@ -42,19 +44,33 @@ import com.smsspam.detector.ui.screens.RulesScreen
 import com.smsspam.detector.ui.screens.ScheduledScreen
 import com.smsspam.detector.ui.screens.SettingsScreen
 
+/**
+ * A "new message" request coming from outside the app (an `sms:`/`smsto:` link
+ * handled by [com.smsspam.detector.MainActivity]). Carries the recipient and an
+ * optional prefilled body.
+ */
+data class ComposeTarget(
+    val recipient: String,
+    val body: String,
+)
+
 private object Routes {
     const val MESSAGES = "messages"
     const val QUARANTINE = "quarantine"
     const val RULES = "rules"
     const val SETTINGS = "settings"
     const val SCHEDULED = "scheduled"
-    const val COMPOSE = "compose"
     const val CONVERSATION = "conversation"
     const val CONVERSATION_ARG = "address"
     const val RULE_EDITOR = "rule_editor"
     const val RULE_EDITOR_ARG = "ruleId"
+    const val COMPOSE = "compose"
+    const val COMPOSE_RECIPIENT_ARG = "recipient"
+    const val COMPOSE_BODY_ARG = "body"
     fun conversation(address: String) = "$CONVERSATION/${Uri.encode(address)}"
     fun ruleEditor(id: String) = "$RULE_EDITOR/$id"
+    fun compose(recipient: String, body: String) =
+        "$COMPOSE?$COMPOSE_RECIPIENT_ARG=${Uri.encode(recipient)}&$COMPOSE_BODY_ARG=${Uri.encode(body)}"
 }
 
 private data class TopLevelDestination(
@@ -65,7 +81,11 @@ private data class TopLevelDestination(
 )
 
 @Composable
-fun AppRoot(viewModel: AppViewModel = viewModel()) {
+fun AppRoot(
+    viewModel: AppViewModel = viewModel(),
+    composeTarget: ComposeTarget? = null,
+    onComposeTargetConsumed: () -> Unit = {},
+) {
     val navController = rememberNavController()
     val snackbarHostState = remember { SnackbarHostState() }
     val backStackEntry by navController.currentBackStackEntryAsState()
@@ -90,6 +110,14 @@ fun AppRoot(viewModel: AppViewModel = viewModel()) {
             }
         )
         viewModel.consumeEvent()
+    }
+
+    // An external `sms:`/`smsto:` link opens a prefilled compose screen here,
+    // inside the single activity, instead of a separate compose activity.
+    LaunchedEffect(composeTarget) {
+        val target = composeTarget ?: return@LaunchedEffect
+        navController.navigate(Routes.compose(target.recipient, target.body))
+        onComposeTargetConsumed()
     }
 
     Scaffold(
@@ -121,16 +149,22 @@ fun AppRoot(viewModel: AppViewModel = viewModel()) {
             }
         },
     ) { innerPadding ->
+        // No screen transitions: navigation is instant, so taps and back never
+        // wait on an animation.
         NavHost(
             navController = navController,
             startDestination = Routes.MESSAGES,
             modifier = Modifier.padding(innerPadding),
+            enterTransition = { EnterTransition.None },
+            exitTransition = { ExitTransition.None },
+            popEnterTransition = { EnterTransition.None },
+            popExitTransition = { ExitTransition.None },
         ) {
             composable(Routes.MESSAGES) {
                 ConversationsScreen(
                     viewModel = viewModel,
                     onOpenConversation = { address -> navController.navigate(Routes.conversation(address)) },
-                    onNewMessage = { navController.navigate(Routes.COMPOSE) },
+                    onNewMessage = { navController.navigate(Routes.compose("", "")) },
                     onOpenScheduled = { navController.navigate(Routes.SCHEDULED) },
                 )
             }
@@ -152,8 +186,30 @@ fun AppRoot(viewModel: AppViewModel = viewModel()) {
             composable(Routes.SCHEDULED) {
                 ScheduledScreen(viewModel = viewModel, onBack = { navController.popBackStack() })
             }
-            composable(Routes.COMPOSE) {
-                ConversationScreen(viewModel = viewModel, address = null, onBack = { navController.popBackStack() })
+            composable(
+                route = "${Routes.COMPOSE}?${Routes.COMPOSE_RECIPIENT_ARG}={${Routes.COMPOSE_RECIPIENT_ARG}}" +
+                    "&${Routes.COMPOSE_BODY_ARG}={${Routes.COMPOSE_BODY_ARG}}",
+                arguments = listOf(
+                    navArgument(Routes.COMPOSE_RECIPIENT_ARG) {
+                        type = NavType.StringType
+                        defaultValue = ""
+                    },
+                    navArgument(Routes.COMPOSE_BODY_ARG) {
+                        type = NavType.StringType
+                        defaultValue = ""
+                    },
+                ),
+            ) { entry ->
+                val recipient = entry.arguments?.getString(Routes.COMPOSE_RECIPIENT_ARG)
+                    ?.let { Uri.decode(it) }.orEmpty()
+                val body = entry.arguments?.getString(Routes.COMPOSE_BODY_ARG)
+                    ?.let { Uri.decode(it) }.orEmpty()
+                ConversationScreen(
+                    viewModel = viewModel,
+                    address = recipient.takeIf { it.isNotBlank() },
+                    initialBody = body,
+                    onBack = { navController.popBackStack() },
+                )
             }
             composable(
                 route = "${Routes.CONVERSATION}/{${Routes.CONVERSATION_ARG}}",

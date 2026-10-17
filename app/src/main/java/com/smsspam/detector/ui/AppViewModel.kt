@@ -21,6 +21,7 @@ import com.smsspam.detector.sms.SmsSender
 import com.smsspam.detector.sms.SmsThreads
 import com.smsspam.detector.sms.restoreToInbox
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -152,17 +153,31 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     // --- Conversations -----------------------------------------------------
 
-    /** Reloads the conversation list from the system SMS provider. */
+    private var conversationsJob: Job? = null
+    private var contactsJob: Job? = null
+
+    /**
+     * Reloads the conversation list from the system SMS provider. Concurrent
+     * requests are coalesced so navigating between screens never launches
+     * overlapping inbox reads.
+     */
     fun refreshConversations() {
-        viewModelScope.launch {
+        if (conversationsJob?.isActive == true) return
+        conversationsJob = viewModelScope.launch {
             val app = getApplication<Application>()
             _conversations.value = withContext(Dispatchers.IO) { SmsThreads.readConversations(app) }
         }
     }
 
-    /** Reloads the contact name lookup. Requires READ_CONTACTS. */
-    fun refreshContacts() {
-        viewModelScope.launch {
+    /**
+     * Reloads the contact name lookup (requires READ_CONTACTS). The result is
+     * reused across screens; pass [force] to bypass the cache after the user
+     * grants the permission or imports data.
+     */
+    fun refreshContacts(force: Boolean = false) {
+        if (contactsJob?.isActive == true) return
+        if (!force && _contacts.value.isNotEmpty()) return
+        contactsJob = viewModelScope.launch {
             val app = getApplication<Application>()
             _contacts.value = withContext(Dispatchers.IO) { ContactsResolver.loadNames(app) }
         }

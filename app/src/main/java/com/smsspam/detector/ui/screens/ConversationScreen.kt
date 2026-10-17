@@ -67,6 +67,7 @@ import com.smsspam.detector.ui.components.sameDay
 fun ConversationScreen(
     viewModel: AppViewModel,
     address: String?,
+    initialBody: String = "",
     onBack: () -> Unit,
 ) {
     val context = LocalContext.current
@@ -74,7 +75,7 @@ fun ConversationScreen(
     val contacts by viewModel.contacts.collectAsStateWithLifecycle()
     val isDefaultSms by viewModel.isDefaultSms.collectAsStateWithLifecycle()
     var recipient by remember(address) { mutableStateOf(address.orEmpty()) }
-    var body by remember { mutableStateOf("") }
+    var body by remember(initialBody) { mutableStateOf(initialBody) }
     var showDefaultDialog by remember { mutableStateOf(false) }
     val isNew = address.isNullOrBlank()
 
@@ -85,7 +86,6 @@ fun ConversationScreen(
     LaunchedEffect(address) {
         viewModel.openConversation(address.orEmpty())
         viewModel.refreshContacts()
-        viewModel.refreshDefaultSms()
     }
 
     LifecycleResumeEffect(Unit) {

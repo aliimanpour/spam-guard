@@ -42,7 +42,6 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -56,6 +55,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.smsspam.detector.contacts.ContactsResolver
 import com.smsspam.detector.ui.AppViewModel
 import com.smsspam.detector.ui.components.AppPermission
 import com.smsspam.detector.ui.components.ContactAvatar
@@ -88,32 +88,33 @@ fun ConversationsScreen(
     ) {
         permissionStatus.value = AppPermission.needed.associateWith { context.hasPermission(it.permission) }
         viewModel.refreshConversations()
-        viewModel.refreshContacts()
+        viewModel.refreshContacts(force = true)
     }
     val roleLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.StartActivityForResult()
     ) { viewModel.refreshDefaultSms() }
 
-    LaunchedEffect(Unit) {
-        viewModel.refreshDefaultSms()
-        viewModel.refreshConversations()
-        viewModel.refreshContacts()
-    }
-
-    // Keep the "default SMS app" state and the inbox fresh when returning to the screen.
+    // Single load path: this runs on first composition and every time the
+    // destination resumes. The ViewModel coalesces in-flight reads, so there is
+    // no duplicate inbox/contacts work when returning to this screen.
     LifecycleResumeEffect(Unit) {
         viewModel.refreshDefaultSms()
         viewModel.refreshConversations()
+        viewModel.refreshContacts()
         onPauseOrDispose { }
     }
 
-    val visible = conversations.filter { conversation ->
-        val name = contacts[com.smsspam.detector.contacts.ContactsResolver.normalize(conversation.address)]
-            ?: conversation.address
-        query.isBlank() ||
-            name.contains(query, ignoreCase = true) ||
-            conversation.address.contains(query, ignoreCase = true) ||
-            conversation.snippet.contains(query, ignoreCase = true)
+    // Resolve display names and filter once per data change, not per row or
+    // per recomposition.
+    val visible = remember(conversations, contacts, query) {
+        conversations.mapNotNull { conversation ->
+            val name = contacts[ContactsResolver.normalize(conversation.address)] ?: conversation.address
+            val matches = query.isBlank() ||
+                name.contains(query, ignoreCase = true) ||
+                conversation.address.contains(query, ignoreCase = true) ||
+                conversation.snippet.contains(query, ignoreCase = true)
+            if (matches) conversation to name else null
+        }
     }
     val missingRead = !context.hasPermission(AppPermission.READ_SMS.permission)
 
@@ -199,8 +200,7 @@ fun ConversationsScreen(
                 LazyColumn(
                     contentPadding = PaddingValues(bottom = 96.dp),
                 ) {
-                    items(visible, key = { it.address }) { conversation ->
-                        val name = viewModel.contactName(conversation.address) ?: conversation.address
+                    items(visible, key = { it.first.address }) { (conversation, name) ->
                         ConversationRow(
                             name = name,
                             address = conversation.address,
