@@ -44,7 +44,6 @@ import com.smsspam.detector.ui.screens.ConversationsScreen
 import com.smsspam.detector.ui.screens.QuarantineScreen
 import com.smsspam.detector.ui.screens.RuleEditorScreen
 import com.smsspam.detector.ui.screens.RulesScreen
-import com.smsspam.detector.ui.screens.ScheduledScreen
 import com.smsspam.detector.ui.screens.SettingsScreen
 
 /**
@@ -62,7 +61,6 @@ private object Routes {
     const val QUARANTINE = "quarantine"
     const val RULES = "rules"
     const val SETTINGS = "settings"
-    const val SCHEDULED = "scheduled"
     const val CONVERSATION = "conversation"
     const val CONVERSATION_ARG = "address"
     const val RULE_EDITOR = "rule_editor"
@@ -181,7 +179,6 @@ fun AppRoot(
                     viewModel = viewModel,
                     onOpenConversation = { address -> navController.navigate(Routes.conversation(address)) },
                     onNewMessage = { navController.navigate(Routes.compose("", "")) },
-                    onOpenScheduled = { navController.navigate(Routes.SCHEDULED) },
                 )
             }
             composable(Routes.QUARANTINE) {
@@ -201,9 +198,6 @@ fun AppRoot(
             }
             composable(Routes.SETTINGS) {
                 SettingsScreen(viewModel = viewModel)
-            }
-            composable(Routes.SCHEDULED) {
-                ScheduledScreen(viewModel = viewModel, onBack = { navController.popBackStack() })
             }
             composable(
                 route = "${Routes.COMPOSE}?${Routes.COMPOSE_RECIPIENT_ARG}={${Routes.COMPOSE_RECIPIENT_ARG}}" +

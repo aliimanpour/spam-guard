@@ -72,11 +72,12 @@ class RuleRepository(context: Context) {
             metaPrefs.edit().putInt(KEY_PRESET_VERSION, PRESET_VERSION).apply()
             return defaults
         }
-        // A preset generation was added since this list was stored: append the
-        // presets it is missing once (a deleted preset stays deleted afterwards).
+        // A preset generation was added since this list was stored: refresh the
+        // built-in presets to their latest definitions (keeping the user's
+        // enabled/disabled choice) and append any brand-new presets once.
         if (metaPrefs.getInt(KEY_PRESET_VERSION, 0) < PRESET_VERSION) {
             val merged = mergePresets(stored)
-            if (merged.size > stored.size) store.write(merged.map { it.toJson() })
+            store.write(merged.map { it.toJson() })
             metaPrefs.edit().putInt(KEY_PRESET_VERSION, PRESET_VERSION).apply()
             return merged
         }
@@ -97,10 +98,20 @@ class RuleRepository(context: Context) {
         setProtectionEnabled(true)
     }
 
-    /** Appends every built-in preset (by id) that [rules] does not already have. */
+    /**
+     * Refreshes built-in presets to their latest shipped definition (keeping the
+     * user's on/off choice) and appends every preset (by id) that [rules] does
+     * not already have.
+     */
     private fun mergePresets(rules: List<Rule>): List<Rule> {
+        val defaults = defaultRules()
+        val defaultsById = defaults.associateBy { it.id }
         val known = rules.mapTo(HashSet()) { it.id }
-        return rules + defaultRules().filter { it.id !in known }
+        val refreshed = rules.map { rule ->
+            val latest = defaultsById[rule.id]
+            if (rule.builtin && latest != null) latest.copy(enabled = rule.enabled) else rule
+        }
+        return refreshed + defaults.filter { it.id !in known }
     }
 
     companion object {
@@ -161,9 +172,36 @@ class RuleRepository(context: Context) {
                 logic = RuleLogic.ANY,
                 builtin = true,
                 conditions = listOf(
-                    Condition(id = "preset-optout-1", field = SmsField.BODY, type = MatchType.CONTAINS, pattern = "لغو11"),
-                    Condition(id = "preset-optout-2", field = SmsField.BODY, type = MatchType.CONTAINS, pattern = "لغو 11"),
-                    Condition(id = "preset-optout-3", field = SmsField.BODY, type = MatchType.CONTAINS, pattern = "لغو12"),
+                    // لغو + optional space/ZWNJ + a 1–2 digit code, in Latin,
+                    // Persian (۰-۹) or Arabic-Indic (٠-٩) digits: لغو11، لغو ۱۱، لغو۱۲.
+                    Condition(
+                        id = "preset-optout-1",
+                        field = SmsField.BODY,
+                        type = MatchType.REGEX,
+                        pattern = "لغو[\\s\u200c]*[0-9۰-۹٠-٩]{1,2}",
+                    ),
+                ),
+            ),
+            Rule(
+                id = "preset-fa-promo",
+                name = "Persian promo & scam spam",
+                enabled = true,
+                logic = RuleLogic.ANY,
+                builtin = true,
+                conditions = listOf(
+                    Condition(id = "preset-fa-promo-1", field = SmsField.BODY, type = MatchType.CONTAINS, pattern = "شرط بندی"),
+                    Condition(id = "preset-fa-promo-2", field = SmsField.BODY, type = MatchType.CONTAINS, pattern = "شرط‌بندی"),
+                    Condition(id = "preset-fa-promo-3", field = SmsField.BODY, type = MatchType.CONTAINS, pattern = "کازینو"),
+                    Condition(id = "preset-fa-promo-4", field = SmsField.BODY, type = MatchType.CONTAINS, pattern = "پیش بینی فوتبال"),
+                    Condition(id = "preset-fa-promo-5", field = SmsField.BODY, type = MatchType.CONTAINS, pattern = "پیش‌بینی فوتبال"),
+                    Condition(id = "preset-fa-promo-6", field = SmsField.BODY, type = MatchType.CONTAINS, pattern = "وام بدون ضامن"),
+                    Condition(id = "preset-fa-promo-7", field = SmsField.BODY, type = MatchType.CONTAINS, pattern = "وام بدون چک"),
+                    Condition(id = "preset-fa-promo-8", field = SmsField.BODY, type = MatchType.CONTAINS, pattern = "وام فوری"),
+                    Condition(id = "preset-fa-promo-9", field = SmsField.BODY, type = MatchType.CONTAINS, pattern = "سود تضمینی"),
+                    Condition(id = "preset-fa-promo-10", field = SmsField.BODY, type = MatchType.CONTAINS, pattern = "سرمایه گذاری تضمینی"),
+                    Condition(id = "preset-fa-promo-11", field = SmsField.BODY, type = MatchType.CONTAINS, pattern = "سرمایه‌گذاری تضمینی"),
+                    Condition(id = "preset-fa-promo-12", field = SmsField.BODY, type = MatchType.CONTAINS, pattern = "خرید فالوور"),
+                    Condition(id = "preset-fa-promo-13", field = SmsField.BODY, type = MatchType.CONTAINS, pattern = "فالوور اینستاگرام"),
                 ),
             ),
             Rule(
@@ -200,7 +238,7 @@ class RuleRepository(context: Context) {
         )
 
         /** Bump when a new preset is added so stored lists pick it up on upgrade. */
-        const val PRESET_VERSION = 2
+        const val PRESET_VERSION = 3
 
         private const val KEY_PRESET_VERSION = "preset_version"
         private const val KEY_PROTECTION_ENABLED = "protection_enabled"

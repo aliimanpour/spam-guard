@@ -97,6 +97,24 @@ object SmsInbox {
         false
     }
 
+    /**
+     * Deletes several messages by their provider row ids in one statement.
+     * Returns the number of removed rows (0 when we do not hold the role).
+     */
+    fun deleteByIds(context: Context, ids: Collection<Long>): Int {
+        if (ids.isEmpty()) return 0
+        return try {
+            val placeholders = ids.joinToString(",") { "?" }
+            context.contentResolver.delete(
+                Telephony.Sms.CONTENT_URI,
+                "${Telephony.Sms._ID} IN ($placeholders)",
+                ids.map { it.toString() }.toTypedArray(),
+            )
+        } catch (_: Exception) {
+            0
+        }
+    }
+
     /** True when this app currently holds the default SMS role. */
     fun isDefaultSmsApp(context: Context): Boolean = try {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {

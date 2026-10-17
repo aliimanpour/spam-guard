@@ -9,8 +9,12 @@ import android.provider.BaseColumns
 import android.provider.Telephony
 import androidx.core.content.ContextCompat
 
-/** Delivery state of an outgoing message, for the sending-status icon in the UI. */
-enum class SendStatus { SENDING, SENT, FAILED }
+/**
+ * Delivery state of an outgoing message, for the sending-status icon in the UI:
+ * one clock while sending, one tick once handed to the network, two ticks once
+ * the delivery report confirms it reached the recipient, and an error on failure.
+ */
+enum class SendStatus { SENDING, SENT, DELIVERED, FAILED }
 
 /** A single message shown inside a conversation thread. */
 data class SmsMessage(
@@ -24,12 +28,15 @@ data class SmsMessage(
 ) {
     val isIncoming: Boolean get() = type == Telephony.Sms.MESSAGE_TYPE_INBOX
 
-    /** Maps a provider message type to a send status for outgoing messages. */
+    /** Maps a provider message type and delivery status to a send status. */
     companion object {
-        fun statusForType(type: Int): SendStatus = when (type) {
-            Telephony.Sms.MESSAGE_TYPE_OUTBOX,
-            Telephony.Sms.MESSAGE_TYPE_QUEUED -> SendStatus.SENDING
-            Telephony.Sms.MESSAGE_TYPE_FAILED -> SendStatus.FAILED
+        fun statusFor(type: Int, providerStatus: Int): SendStatus = when {
+            type == Telephony.Sms.MESSAGE_TYPE_FAILED ||
+                providerStatus == Telephony.Sms.STATUS_FAILED -> SendStatus.FAILED
+            providerStatus == Telephony.Sms.STATUS_COMPLETE -> SendStatus.DELIVERED
+            type == Telephony.Sms.MESSAGE_TYPE_OUTBOX ||
+                type == Telephony.Sms.MESSAGE_TYPE_QUEUED ||
+                providerStatus == Telephony.Sms.STATUS_PENDING -> SendStatus.SENDING
             else -> SendStatus.SENT
         }
     }
@@ -86,6 +93,7 @@ object SmsThreads {
         Telephony.Sms.DATE,
         Telephony.Sms.TYPE,
         Telephony.Sms.READ,
+        Telephony.Sms.STATUS,
     )
 
     /** True when READ_SMS is granted, i.e. the conversations UI has anything to read. */
@@ -172,6 +180,7 @@ object SmsThreads {
                 val dateIdx = cursor.getColumnIndexOrThrow(Telephony.Sms.DATE)
                 val typeIdx = cursor.getColumnIndexOrThrow(Telephony.Sms.TYPE)
                 val readIdx = cursor.getColumnIndexOrThrow(Telephony.Sms.READ)
+                val statusIdx = cursor.getColumnIndexOrThrow(Telephony.Sms.STATUS)
                 // Stop one row past the page: the surplus proves more exist.
                 while (cursor.moveToNext() && result.size < limit + 1) {
                     val type = cursor.getInt(typeIdx)
@@ -183,7 +192,7 @@ object SmsThreads {
                         type = type,
                         read = cursor.getInt(readIdx) == 1,
                         status = if (type == Telephony.Sms.MESSAGE_TYPE_INBOX) SendStatus.SENT
-                            else SmsMessage.statusForType(type),
+                            else SmsMessage.statusFor(type, cursor.getInt(statusIdx)),
                     )
                 }
             }
@@ -239,6 +248,23 @@ object SmsThreads {
             "${Telephony.Sms.THREAD_ID} = ? AND ${Telephony.Sms.TYPE} = ${Telephony.Sms.MESSAGE_TYPE_INBOX}",
             arrayOf(threadId.toString()),
         ) >= 0
+    } catch (_: Exception) {
+        false
+    }
+
+    /**
+     * Updates the delivery [status] (`STATUS_COMPLETE` / `STATUS_FAILED`) of an
+     * outgoing message by its provider row id, so the UI can show two ticks once
+     * a delivery report arrives. Only the default SMS app may write here.
+     */
+    fun markStatus(context: Context, id: Long, status: Int): Boolean = try {
+        val values = ContentValues().apply { put(Telephony.Sms.STATUS, status) }
+        context.contentResolver.update(
+            Telephony.Sms.CONTENT_URI,
+            values,
+            "${Telephony.Sms._ID} = ?",
+            arrayOf(id.toString()),
+        ) > 0
     } catch (_: Exception) {
         false
     }

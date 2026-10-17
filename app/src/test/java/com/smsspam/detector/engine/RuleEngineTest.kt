@@ -24,6 +24,30 @@ class RuleEngineTest {
     }
 
     @Test
+    fun `opt-out rule matches Persian and Arabic digit codes`() {
+        val rules = RuleRepository.defaultRules()
+        assertEquals("preset-optout", RuleEngine.firstMatch("", "برای لغو ۱۱ پیامک کنید", rules)?.id)
+        assertEquals("preset-optout", RuleEngine.firstMatch("", "لغو۱۲", rules)?.id)
+        assertEquals("preset-optout", RuleEngine.firstMatch("", "لغو 12", rules)?.id)
+        assertEquals("preset-optout", RuleEngine.firstMatch("", "لغو ١١", rules)?.id)
+    }
+
+    @Test
+    fun `conservative Persian promo preset blocks scam keywords`() {
+        val rules = RuleRepository.defaultRules()
+        assertEquals("preset-fa-promo", RuleEngine.firstMatch("", "تیم پیش بینی فوتبال با سود تضمینی", rules)?.id)
+        assertEquals("preset-fa-promo", RuleEngine.firstMatch("", "وام بدون ضامن فوری", rules)?.id)
+        assertEquals("preset-fa-promo", RuleEngine.firstMatch("", "خرید فالوور اینستاگرام ارزان", rules)?.id)
+    }
+
+    @Test
+    fun `ordinary Persian messages are not promoted to spam`() {
+        val rules = RuleRepository.defaultRules()
+        assertNull(RuleEngine.firstMatch("", "سلام، حالت چطوره؟ قرار جلسه فردا ساعت ۵", rules))
+        assertNull(RuleEngine.firstMatch("", "فاکتور خرید شما آماده است", rules))
+    }
+
+    @Test
     fun `plain greeting is not spam`() {
         val rules = RuleRepository.defaultRules()
         assertNull(RuleEngine.firstMatch("+989120000000", "سلام، حالت چطوره؟", rules))

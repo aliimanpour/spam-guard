@@ -34,7 +34,6 @@ import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.MarkEmailUnread
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Phone
-import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
@@ -92,7 +91,6 @@ fun ConversationsScreen(
     viewModel: AppViewModel,
     onOpenConversation: (String) -> Unit,
     onNewMessage: () -> Unit,
-    onOpenScheduled: () -> Unit,
 ) {
     val context = LocalContext.current
     val conversations by viewModel.conversations.collectAsStateWithLifecycle()
@@ -206,9 +204,6 @@ val permissionLauncher = rememberLauncherForActivityResult(
                             selectedAddresses = emptySet()
                         }) {
                             Icon(Icons.Filled.CheckCircle, contentDescription = "Select conversations")
-                        }
-                        IconButton(onClick = onOpenScheduled) {
-                            Icon(Icons.Filled.Schedule, contentDescription = "Scheduled messages")
                         }
                     },
                 )

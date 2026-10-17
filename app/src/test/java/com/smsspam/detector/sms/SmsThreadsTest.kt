@@ -1,5 +1,6 @@
 package com.smsspam.detector.sms
 
+import android.provider.Telephony
 import com.smsspam.detector.sms.SmsThreads.buildConversations
 import com.smsspam.detector.sms.SmsThreads.mergePages
 import com.smsspam.detector.sms.SmsThreads.parseRecipientIds
@@ -100,5 +101,20 @@ class SmsThreadsTest {
     fun `merge keeps empty pages harmless`() {
         assertEquals(listOf(1L), mergePages(emptyList(), listOf(message(1))).map { it.id })
         assertFalse(mergePages(emptyList(), emptyList()).isNotEmpty())
+    }
+
+    @Test
+    fun `maps provider delivery status to a send status`() {
+        val sentType = Telephony.Sms.MESSAGE_TYPE_SENT
+        // No delivery report yet -> single tick.
+        assertEquals(SendStatus.SENT, SmsMessage.statusFor(sentType, Telephony.Sms.STATUS_NONE))
+        // Delivery report received -> two ticks.
+        assertEquals(SendStatus.DELIVERED, SmsMessage.statusFor(sentType, Telephony.Sms.STATUS_COMPLETE))
+        // Still queued at the radio -> clock.
+        assertEquals(SendStatus.SENDING, SmsMessage.statusFor(Telephony.Sms.MESSAGE_TYPE_OUTBOX, Telephony.Sms.STATUS_NONE))
+        assertEquals(SendStatus.SENDING, SmsMessage.statusFor(sentType, Telephony.Sms.STATUS_PENDING))
+        // Failure wins over any delivery state.
+        assertEquals(SendStatus.FAILED, SmsMessage.statusFor(sentType, Telephony.Sms.STATUS_FAILED))
+        assertEquals(SendStatus.FAILED, SmsMessage.statusFor(Telephony.Sms.MESSAGE_TYPE_FAILED, Telephony.Sms.STATUS_NONE))
     }
 }

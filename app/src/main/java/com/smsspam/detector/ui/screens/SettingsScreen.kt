@@ -60,6 +60,7 @@ fun SettingsScreen(viewModel: AppViewModel) {
     val permissionStatus = rememberPermissionStatus()
     val autoUnsubscribe by viewModel.autoUnsubscribe.collectAsStateWithLifecycle()
     val unsubscribeCode by viewModel.unsubscribeCode.collectAsStateWithLifecycle()
+    val deliveryReports by viewModel.deliveryReports.collectAsStateWithLifecycle()
 
     val permissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
@@ -170,6 +171,34 @@ fun SettingsScreen(viewModel: AppViewModel) {
                             Text("Open system default apps")
                         }
                     }
+                }
+            }
+
+            SectionTitle("Delivery reports")
+            Card(modifier = Modifier.fillMaxWidth()) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(16.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            "Read receipts",
+                            style = MaterialTheme.typography.titleSmall,
+                            fontWeight = FontWeight.SemiBold,
+                        )
+                        Text(
+                            "Ask the network for a delivery report so delivered messages show a " +
+                                "second tick (✓✓). Turn off to send without reports.",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    Switch(
+                        checked = deliveryReports,
+                        onCheckedChange = { viewModel.setDeliveryReports(it) },
+                    )
                 }
             }
 

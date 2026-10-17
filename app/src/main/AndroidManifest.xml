@@ -85,6 +85,15 @@
             </intent-filter>
         </receiver>
 
+        <receiver
+            android:name=".sms.SmsStatusReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="com.smsspam.detector.action.SMS_SENT" />
+                <action android:name="com.smsspam.detector.action.SMS_DELIVERED" />
+            </intent-filter>
+        </receiver>
+
         <service
             android:name=".sms.RespondViaMessageService"
             android:exported="true"

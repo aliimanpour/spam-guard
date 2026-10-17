@@ -91,6 +91,10 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     private val _unsubscribeCode = MutableStateFlow(container.settingsStore.unsubscribeCode)
     val unsubscribeCode: StateFlow<String> = _unsubscribeCode.asStateFlow()
 
+    /** When true, outgoing messages request delivery reports (two ticks when delivered). */
+    private val _deliveryReports = MutableStateFlow(container.settingsStore.deliveryReports)
+    val deliveryReports: StateFlow<Boolean> = _deliveryReports.asStateFlow()
+
     fun setAutoUnsubscribe(enabled: Boolean) {
         container.settingsStore.autoUnsubscribe = enabled
         _autoUnsubscribe.value = enabled
@@ -99,6 +103,11 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun setUnsubscribeCode(code: String) {
         container.settingsStore.unsubscribeCode = code
         _unsubscribeCode.value = code
+    }
+
+    fun setDeliveryReports(enabled: Boolean) {
+        container.settingsStore.deliveryReports = enabled
+        _deliveryReports.value = enabled
     }
 
     // --- SIM cards ----------------------------------------------------------
@@ -675,17 +684,32 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
      * send stub when the id is negative), then refreshes the open thread.
      */
     fun deleteMessage(message: SmsMessage) {
-        if (message.id < 0L) {
-            deletePendingSend(message.id)
-            return
+        deleteMessages(listOf(message))
+    }
+
+    /**
+     * Deletes several messages at once — the provider rows and/or the in-flight
+     * pending stubs — then refreshes the open thread and the conversation list.
+     * Used by the conversation's multi-select mode.
+     */
+    fun deleteMessages(targets: List<SmsMessage>) {
+        if (targets.isEmpty()) return
+        val pendingIds = targets.filter { it.id < 0L }.map { it.id }.toSet()
+        val providerIds = targets.filter { it.id > 0L }.map { it.id }
+        if (pendingIds.isNotEmpty()) {
+            _pendingSends.value = _pendingSends.value.filterNot { it.id in pendingIds }
         }
-        val app = appContext
-        viewModelScope.launch {
-            withContext(Dispatchers.IO) { SmsInbox.deleteById(app, message.id) }
-            refreshOpenThread()
-            refreshConversations(force = true)
+        if (providerIds.isNotEmpty()) {
+            val app = appContext
+            viewModelScope.launch {
+                withContext(Dispatchers.IO) { SmsInbox.deleteByIds(app, providerIds) }
+                refreshOpenThread()
+                refreshConversations(force = true)
+            }
         }
-        _events.value = UiEvent.Message("Message deleted")
+        _events.value = UiEvent.Message(
+            if (targets.size == 1) "Message deleted" else "Deleted ${targets.size} messages"
+        )
     }
 
     /** Deletes every message in the conversation with [address], then refreshes the list. */
@@ -762,6 +786,19 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     // --- Scheduled messages ------------------------------------------------
+
+    /**
+     * Pending or failed scheduled messages addressed to [address], for inline
+     * display in that conversation. Sent and cancelled entries are excluded:
+     * a sent message is already the real provider row, and a cancelled one
+     * should no longer be sent.
+     */
+    fun scheduledFor(address: String): List<ScheduledMessage> {
+        val target = SmsSender.parseRecipients(address).firstOrNull() ?: return emptyList()
+        return scheduled.value
+            .filter { it.status == ScheduledStatus.PENDING || it.status == ScheduledStatus.FAILED }
+            .filter { SmsSender.parseRecipients(it.recipient).any { r -> r == target } }
+    }
 
     fun scheduleMessage(recipient: String, body: String, sendAt: Long, subId: Int = 0): Boolean {
         if (recipient.isBlank() || body.isBlank()) return false

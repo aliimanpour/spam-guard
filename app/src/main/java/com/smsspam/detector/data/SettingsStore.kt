@@ -23,10 +23,19 @@ class SettingsStore(context: Context) {
         get() = prefs.getString(KEY_UNSUBSCRIBE_CODE, CODE_AUTO) ?: CODE_AUTO
         set(value) = prefs.edit().putString(KEY_UNSUBSCRIBE_CODE, value).apply()
 
+    /**
+     * When true (the default), outgoing messages request a delivery report and
+     * show a second tick once the report confirms delivery.
+     */
+    var deliveryReports: Boolean
+        get() = prefs.getBoolean(KEY_DELIVERY_REPORTS, true)
+        set(value) = prefs.edit().putBoolean(KEY_DELIVERY_REPORTS, value).apply()
+
     companion object {
         private const val PREFS_NAME = "spam_guard_settings"
         private const val KEY_AUTO_UNSUBSCRIBE = "auto_unsubscribe"
         private const val KEY_UNSUBSCRIBE_CODE = "unsubscribe_code"
+        private const val KEY_DELIVERY_REPORTS = "delivery_reports"
 
         const val CODE_AUTO = "auto"
         val CODE_CHOICES = listOf(CODE_AUTO, "11", "12")
