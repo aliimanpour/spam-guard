@@ -5,6 +5,7 @@ import android.net.Uri
 import com.smsspam.detector.AppContainer
 import com.smsspam.detector.model.QuarantineMessage
 import com.smsspam.detector.model.Rule
+import com.smsspam.detector.model.SavedMessage
 import com.smsspam.detector.model.ScheduledMessage
 import org.json.JSONArray
 import org.json.JSONObject
@@ -35,6 +36,10 @@ object DataTransfer {
                 "scheduled",
                 JSONArray().apply { container.scheduleRepository.scheduled.value.forEach { put(it.toJson()) } },
             )
+            put(
+                "saved",
+                JSONArray().apply { container.savedMessagesRepository.messages.value.forEach { put(it.toJson()) } },
+            )
         }
         context.contentResolver.openOutputStream(uri, "wt")?.use { out ->
             out.write(root.toString(2).toByteArray())
@@ -58,6 +63,7 @@ object DataTransfer {
         val rules = root.optJSONArray("rules")?.toObjects()?.map { Rule.fromJson(it) }.orEmpty()
         val messages = root.optJSONArray("messages")?.toObjects()?.map { QuarantineMessage.fromJson(it) }.orEmpty()
         val scheduled = root.optJSONArray("scheduled")?.toObjects()?.map { ScheduledMessage.fromJson(it) }.orEmpty()
+        val saved = root.optJSONArray("saved")?.toObjects()?.map { SavedMessage.fromJson(it) }.orEmpty()
 
         if (rules.isNotEmpty()) container.ruleRepository.importRules(rules)
         val messagesBefore = container.messageRepository.messages.value.size
@@ -69,8 +75,16 @@ object DataTransfer {
                 addedScheduled++
             }
         }
+        var addedSaved = 0
+        saved.forEach {
+            if (container.savedMessagesRepository.messages.value.none { existing -> existing.id == it.id }) {
+                container.savedMessagesRepository.add(it)
+                addedSaved++
+            }
+        }
 
-        return "Imported ${rules.size} rules, ${messagesAfter - messagesBefore} blocked and $addedScheduled scheduled"
+        return "Imported ${rules.size} rules, ${messagesAfter - messagesBefore} blocked, " +
+            "$addedScheduled scheduled and $addedSaved saved"
     }
 
     private fun JSONArray.toObjects(): List<JSONObject> =

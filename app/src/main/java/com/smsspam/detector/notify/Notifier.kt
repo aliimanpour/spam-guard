@@ -15,6 +15,16 @@ object Notifier {
 
     /** Notification for a normal message received while we are the default SMS app. */
     fun notifyMessage(context: Context, sender: String, body: String) {
+        val container = (context.applicationContext as? SpamGuardApp)?.container
+        // Respect the per-conversation switches and the "unknown numbers" setting.
+        val conversation = container?.conversationSettings?.get(sender)
+        if (conversation?.notify == false) return
+        if (container?.settingsStore?.hideUnknownNotifications == true &&
+            !com.smsspam.detector.contacts.ContactsResolver.isKnown(context, sender)
+        ) {
+            return
+        }
+
         val intent = Intent(context, MainActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
         }
@@ -34,6 +44,8 @@ object Notifier {
             .setPriority(NotificationCompat.PRIORITY_DEFAULT)
             .setAutoCancel(true)
             .setContentIntent(pending)
+            // Per-conversation sound switch: silently suppress sound/vibration.
+            .setSilent(conversation?.sound == false)
 
         // Surface the parts of the message worth acting on right from the shade:
         // the OTP and account numbers become copy buttons, links become an
@@ -71,6 +83,37 @@ object Notifier {
 
         try {
             NotificationManagerCompat.from(context).notify(sender.hashCode(), notification)
+        } catch (_: SecurityException) {
+            // POST_NOTIFICATIONS not granted.
+        }
+    }
+
+    /**
+     * Confirms a conversation PDF export and opens it when the notification is
+     * tapped.
+     */
+    fun notifyExport(context: Context, uri: Uri, title: String, count: Int) {
+        val view = Intent(Intent.ACTION_VIEW).apply {
+            setDataAndType(uri, "application/pdf")
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+        val pending = PendingIntent.getActivity(
+            context,
+            uri.hashCode(),
+            view,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+        val notification = NotificationCompat.Builder(context, SpamGuardApp.EXPORT_CHANNEL_ID)
+            .setSmallIcon(R.drawable.ic_notification)
+            .setContentTitle("Conversation exported")
+            .setContentText("$title · $count messages · tap to open the PDF")
+            .setStyle(NotificationCompat.BigTextStyle().bigText("$title · $count messages · tap to open"))
+            .setPriority(NotificationCompat.PRIORITY_DEFAULT)
+            .setAutoCancel(true)
+            .setContentIntent(pending)
+            .build()
+        try {
+            NotificationManagerCompat.from(context).notify(("export-$title").hashCode(), notification)
         } catch (_: SecurityException) {
             // POST_NOTIFICATIONS not granted.
         }

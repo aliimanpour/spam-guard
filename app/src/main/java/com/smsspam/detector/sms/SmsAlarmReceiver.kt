@@ -32,10 +32,49 @@ class SmsAlarmReceiver : BroadcastReceiver() {
         val message = repository.scheduled.value.firstOrNull { it.id == id } ?: return
         if (message.status != ScheduledStatus.PENDING) return
 
-        val sent = SmsSender.send(app, message.recipient, message.body, message.subId)
-        repository.updateStatus(id, if (sent) ScheduledStatus.SENT else ScheduledStatus.FAILED)
-        Notifier.notifyScheduledResult(app, message.recipient, message.body, sent)
-        Log.i(TAG, "scheduled send id=$id success=$sent")
+        val outcome = SmsSender.sendOutcome(
+            app,
+            message.recipient,
+            message.body,
+            message.subId,
+            existingRowId = message.providerRowId.takeIf { it > 0L } ?: 0L,
+        )
+        if (outcome.ok) {
+            repository.updateStatus(id, ScheduledStatus.SENT)
+            Notifier.notifyScheduledResult(app, message.recipient, message.body, true)
+            Log.i(TAG, "send id=$id success=true")
+            return
+        }
+
+        val attempts = message.attempts + 1
+        // A transient failure (no signal / airplane mode) is queued for another
+        // automatic attempt with a growing backoff. Anything else is final.
+        val requeued = if (outcome.failure.retriable) {
+            SendQueue.enqueue(
+                app,
+                message.recipient,
+                message.body,
+                message.subId,
+                outcome.failure,
+                attempts,
+                message.providerRowId,
+            )
+        } else {
+            null
+        }
+        if (requeued != null && requeued.id == id) {
+            Log.i(TAG, "send id=$id failed (${outcome.failure.message}); retry #$attempts at ${requeued.sendAt}")
+        } else {
+            repository.update(
+                message.copy(
+                    status = ScheduledStatus.FAILED,
+                    attempts = attempts,
+                    lastError = outcome.failure.message,
+                )
+            )
+            Notifier.notifyScheduledResult(app, message.recipient, message.body, false)
+            Log.i(TAG, "send id=$id failed permanently: ${outcome.failure.message}")
+        }
     }
 
     private fun reschedulePending(app: SpamGuardApp) {

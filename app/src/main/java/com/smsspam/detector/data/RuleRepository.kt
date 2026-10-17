@@ -249,9 +249,11 @@ class RuleRepository(context: Context) {
         /**
          * Built-in presets that shipped before but are no longer offered. They
          * are stripped from stored lists on upgrade — e.g. the old link-only
-         * filter, because a link on its own is not spam.
+         * filter, because a link on its own is not spam — and messages they had
+         * caught are re-evaluated and un-blocked at startup
+         * ([com.smsspam.detector.data.MessageRepository.reconcileRetiredMatches]).
          */
-        private val RETIRED_PRESET_IDS = setOf("preset-links")
+        val RETIRED_PRESET_IDS = setOf("preset-links")
 
         /** Bump when a new preset is added so stored lists pick it up on upgrade. */
         const val PRESET_VERSION = 4

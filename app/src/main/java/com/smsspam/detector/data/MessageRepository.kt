@@ -1,8 +1,10 @@
 package com.smsspam.detector.data
 
 import android.content.Context
+import com.smsspam.detector.engine.RuleEngine
 import com.smsspam.detector.model.QuarantineMessage
 import com.smsspam.detector.model.QuarantineStatus
+import com.smsspam.detector.model.Rule
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -74,4 +76,34 @@ class MessageRepository(context: Context) {
 
     @Synchronized
     fun clearAll(): List<QuarantineMessage> = commit(emptyList())
+
+    /**
+     * Re-checks messages that were caught by a preset that is no longer shipped
+     * (see [RuleRepository.RETIRED_PRESET_IDS]) against the live [rules]. A
+     * message that no longer matches any enabled block rule — the old link-only
+     * filter caught every message containing a URL, for example — is marked
+     * not-spam so it leaves the Blocked tab instead of staying a false positive
+     * forever. Messages that still match a current rule are left untouched.
+     *
+     * Idempotent: once a message is un-blocked it is no longer re-evaluated.
+     * Returns the number of messages freed.
+     */
+    @Synchronized
+    fun reconcileRetiredMatches(retiredRuleIds: Set<String>, rules: List<Rule>): Int {
+        if (retiredRuleIds.isEmpty()) return 0
+        var freed = 0
+        val updated = _messages.value.map { message ->
+            if (message.isBlocked &&
+                message.matchedRuleId in retiredRuleIds &&
+                RuleEngine.firstMatch(message.sender, message.body, rules) == null
+            ) {
+                freed++
+                message.copy(status = QuarantineStatus.NOT_SPAM)
+            } else {
+                message
+            }
+        }
+        if (freed > 0) commit(updated)
+        return freed
+    }
 }

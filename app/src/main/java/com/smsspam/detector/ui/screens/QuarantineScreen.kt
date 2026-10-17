@@ -24,6 +24,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Bookmark
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
@@ -195,6 +196,15 @@ fun QuarantineScreen(
                         containerColor = MaterialTheme.colorScheme.surfaceContainer,
                     ),
                     actions = {
+                        IconButton(
+                            onClick = {
+                                viewModel.saveMessages(selectedMessages.map { it.body })
+                                clearSelection()
+                            },
+                            enabled = selectedMessages.isNotEmpty(),
+                        ) {
+                            Icon(Icons.Filled.Bookmark, contentDescription = "Save to Saved messages")
+                        }
                         IconButton(
                             onClick = {
                                 viewModel.markNotSpam(selectedMessages)
@@ -371,6 +381,7 @@ fun QuarantineScreen(
                             onNotSpam = { viewModel.markNotSpam(message) },
                             onRestore = { viewModel.restore(message) },
                             onCopy = { copyText(context, message.body) },
+                            onSave = { viewModel.saveMessages(listOf(message.body)) },
                             onDelete = { viewModel.deleteMessage(message.id) },
                         )
                     }
@@ -456,6 +467,7 @@ private fun BlockedMessageRow(
     onNotSpam: () -> Unit,
     onRestore: () -> Unit,
     onCopy: () -> Unit,
+    onSave: () -> Unit,
     onDelete: () -> Unit,
 ) {
     var menuOpen by remember { mutableStateOf(false) }
@@ -565,6 +577,11 @@ private fun BlockedMessageRow(
                             text = { Text("Copy message") },
                             leadingIcon = { Icon(Icons.Filled.ContentCopy, contentDescription = null) },
                             onClick = { menuOpen = false; onCopy() },
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Save to Saved messages") },
+                            leadingIcon = { Icon(Icons.Filled.Bookmark, contentDescription = null) },
+                            onClick = { menuOpen = false; onSave() },
                         )
                         HorizontalDivider()
                         DropdownMenuItem(

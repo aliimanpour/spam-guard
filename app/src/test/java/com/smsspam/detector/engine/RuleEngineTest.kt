@@ -79,6 +79,28 @@ class RuleEngineTest {
     }
 
     @Test
+    fun `insurance installment reminders with links are not spam`() {
+        // Azki (ازکی) payment reminders carry a URL and the word قسط, but they
+        // are legitimate. The retired link-only preset used to catch them, and
+        // no current preset should.
+        val rules = RuleRepository.defaultRules()
+        val samples = listOf(
+            "علی عزیز؛\n\nبا مراجعه به لینک زیر در ازکی نسبت به پرداخت قسط شهریور ماه " +
+                "بیمه\u200cنامه شماره 307784107 اقدام کن:\n\n" +
+                "https://www.azki.com/installment-factor?utm_medium=installment&installmentId=35513313",
+            "علی عزیز،،\nفقط دو روز تا زمان پرداخت قسط بیمه\u200cنامه به شماره سفارش " +
+                "307784107 در ازکی باقی مانده. برای پرداخت روی لینک زیر بزنید:\n\n" +
+                "https://a.azki.com/Lh2wJWj6s\nاز همراهی شما سپاسگزاریم",
+            "علی عزیز،؛\n\nامروز موعد پرداخت قسط بیمه\u200cنامه با شماره سفارش 307784107 " +
+                "در وب سایت ازکی است.\nبرای جلوگیری از جریمه دیرکرد، قسط خود را از طریق " +
+                "لینک زیر پرداخت کن:\n\nhttps://a.azki.com/EHQ2uCoyA\n\nاز همراهی شما سپاسگزاریم 🌿",
+        )
+        samples.forEach { body ->
+            assertNull("legitimate reminder flagged: $body", RuleEngine.firstMatch("azki", body, rules))
+        }
+    }
+
+    @Test
     fun `plain greeting is not spam`() {
         val rules = RuleRepository.defaultRules()
         assertNull(RuleEngine.firstMatch("+989120000000", "سلام، حالت چطوره؟", rules))

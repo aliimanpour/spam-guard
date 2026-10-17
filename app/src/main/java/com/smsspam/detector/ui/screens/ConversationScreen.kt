@@ -7,6 +7,7 @@ import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import android.provider.Telephony
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -15,6 +16,8 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -40,6 +43,7 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Send
+import androidx.compose.material.icons.filled.Bookmark
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
@@ -47,14 +51,25 @@ import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.DoneAll
 import androidx.compose.material.icons.filled.ErrorOutline
+import androidx.compose.material.icons.filled.Archive
+import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material.icons.filled.LockOpen
 import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.Notifications
+import androidx.compose.material.icons.filled.NotificationsOff
 import androidx.compose.material.icons.filled.Phone
+import androidx.compose.material.icons.filled.PictureAsPdf
+import androidx.compose.material.icons.filled.PushPin
 import androidx.compose.material.icons.filled.RadioButtonUnchecked
+import androidx.compose.material.icons.filled.Restore
 import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Shield
 import androidx.compose.material.icons.filled.SimCard
+import androidx.compose.material.icons.filled.VolumeOff
+import androidx.compose.material.icons.filled.VolumeUp
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Badge
 import androidx.compose.material3.BadgedBox
 import androidx.compose.material3.Card
@@ -95,9 +110,13 @@ import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.smsspam.detector.contacts.ContactsResolver
 import com.smsspam.detector.contacts.Recipient
 import com.smsspam.detector.contacts.RecipientDirectory
+import com.smsspam.detector.engine.SmartReplyEngine
+import com.smsspam.detector.model.ConversationSettings
 import com.smsspam.detector.model.QuarantineMessage
+import com.smsspam.detector.model.QuarantineStatus
 import com.smsspam.detector.model.ScheduledMessage
 import com.smsspam.detector.model.ScheduledStatus
 import com.smsspam.detector.sms.SendStatus
@@ -108,6 +127,7 @@ import com.smsspam.detector.ui.OlderState
 import com.smsspam.detector.ui.components.ContactAvatar
 import com.smsspam.detector.ui.components.EmptyState
 import com.smsspam.detector.ui.components.HighlightedText
+import com.smsspam.detector.ui.components.LockScreen
 import com.smsspam.detector.ui.components.MessageText
 import com.smsspam.detector.ui.components.SetDefaultSmsDialog
 import com.smsspam.detector.ui.components.defaultSmsRoleIntent
@@ -118,6 +138,7 @@ import com.smsspam.detector.ui.components.isRtl
 import com.smsspam.detector.ui.components.openDefaultAppsSettings
 import com.smsspam.detector.ui.components.pickDateTime
 import com.smsspam.detector.ui.components.sameDay
+import kotlinx.coroutines.delay
 
 /**
  * One row in a conversation: a real (or in-flight) SMS, a message the user
@@ -127,20 +148,25 @@ import com.smsspam.detector.ui.components.sameDay
 private sealed interface ChatItem {
     val key: String
     val time: Long
+    /** Display text, used by the multi-select copy/share actions. */
+    val body: String
 
     data class Sms(val message: SmsMessage) : ChatItem {
         override val key: String get() = "sms-${message.id}"
         override val time: Long get() = message.timestamp
+        override val body: String get() = message.body
     }
 
     data class Scheduled(val message: ScheduledMessage) : ChatItem {
         override val key: String get() = "sched-${message.id}"
         override val time: Long get() = message.sendAt
+        override val body: String get() = message.body
     }
 
     data class Quarantined(val message: QuarantineMessage) : ChatItem {
         override val key: String get() = "quar-${message.id}"
         override val time: Long get() = message.timestamp
+        override val body: String get() = message.body
     }
 }
 
@@ -166,25 +192,53 @@ fun ConversationScreen(
     val recipients by viewModel.recipients.collectAsStateWithLifecycle()
     val isDefaultSms by viewModel.isDefaultSms.collectAsStateWithLifecycle()
     val sims by viewModel.sims.collectAsStateWithLifecycle()
+    val conversationSettings by viewModel.conversationSettings.collectAsStateWithLifecycle()
+    val unlockedConversations by viewModel.unlockedConversations.collectAsStateWithLifecycle()
+    val allowDeviceCredential by viewModel.appLockDeviceCredential.collectAsStateWithLifecycle()
+    val smartRepliesEnabled by viewModel.smartReplies.collectAsStateWithLifecycle()
     val listState = rememberLazyListState()
     var recipient by remember(address) { mutableStateOf(address.orEmpty()) }
-    var body by remember(initialBody) { mutableStateOf(initialBody) }
+    // The composer starts from any saved draft (kept per conversation) or from
+    // an explicitly forwarded body.
+    var body by remember(address) {
+        mutableStateOf(initialBody.ifBlank { address?.let { viewModel.draft(it) }.orEmpty() })
+    }
     var showDefaultDialog by remember { mutableStateOf(false) }
     var showDeleteDialog by remember { mutableStateOf(false) }
-    // Message whose long-press menu is open, or null.
+    // Message whose tap menu is open, or null.
     var menuMessage by remember { mutableStateOf<SmsMessage?>(null) }
+    // Blocked message whose tap menu is open, or null.
+    var menuQuarantine by remember { mutableStateOf<QuarantineMessage?>(null) }
     var showConversationMenu by remember { mutableStateOf(false) }
     // User's SIM choice for this open; null keeps the remembered per-conversation SIM.
     var simOverride by remember(address) { mutableStateOf<Int?>(null) }
     // Set right after a send (or a schedule) so the next list change scrolls
     // back to the newest balloon even if the user had scrolled into history.
     var jumpToLatest by remember { mutableStateOf(false) }
-    // Ids of the messages picked in multi-select mode; empty = not selecting.
-    var selectedIds by remember(address) { mutableStateOf<Set<Long>>(emptySet()) }
+    // Keys of the messages picked in multi-select mode; empty = not selecting.
+    // Keys are [ChatItem.key] so normal, scheduled and blocked rows share one
+    // selection set.
+    var selectedIds by remember(address) { mutableStateOf<Set<String>>(emptySet()) }
     var showDeleteSelectedDialog by remember { mutableStateOf(false) }
     val chosenSubId = simOverride ?: viewModel.selectedSubId(address.orEmpty())
     val isNew = address.isNullOrBlank()
     val selecting = selectedIds.isNotEmpty()
+    val convKey = ContactsResolver.normalize(address.orEmpty()).ifBlank { address.orEmpty().trim() }
+    val convState = conversationSettings[convKey] ?: ConversationSettings()
+
+    // Per-conversation lock: hide the thread until the user unlocks it.
+    if (!isNew && convState.locked && convKey !in unlockedConversations) {
+        val title = viewModel.contactName(address.orEmpty()) ?: address.orEmpty()
+        LockScreen(
+            title = "Locked conversation",
+            subtitle = title,
+            hasPin = viewModel.appLockHasPin(),
+            allowDeviceCredential = allowDeviceCredential,
+            onUnlockWithPin = { viewModel.verifyAppPin(it) },
+            onUnlocked = { viewModel.unlockConversation(address.orEmpty()) },
+        )
+        return
+    }
 
     // Real/in-flight messages, this thread's not-yet-sent scheduled messages, and
     // any messages the filter quarantined from this sender (which are gone from
@@ -200,9 +254,16 @@ fun ConversationScreen(
             .map { ChatItem.Quarantined(it) }
         (sms + queued + blocked).sortedBy { it.time }
     }
-    val selectedMessages = remember(messages, selectedIds) {
-        messages.filter { it.id in selectedIds }
+    val selectedItems = remember(chatItems, selectedIds) {
+        chatItems.filter { it.key in selectedIds }
     }
+    // Multi-select spans normal, scheduled and blocked rows; when deleting,
+    // provider/pending messages and quarantine records go to different stores.
+    val selectedSms = selectedItems.filterIsInstance<ChatItem.Sms>().map { it.message }
+    val selectedQuarantineIds = selectedItems
+        .filterIsInstance<ChatItem.Quarantined>()
+        .map { it.message.id }
+        .toSet()
 
     // Suggestions for the editable "To" field: contacts plus any number that has
     // an SMS thread or a call-log entry. Hidden once the field matches a pick.
@@ -217,6 +278,15 @@ fun ConversationScreen(
     val roleLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.StartActivityForResult()
     ) { viewModel.refreshDefaultSms() }
+
+    val pdfLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("application/pdf")
+    ) { uri ->
+        uri?.let {
+            val title = viewModel.contactName(address.orEmpty()) ?: address.orEmpty()
+            viewModel.exportConversationPdf(it, address.orEmpty(), "Conversation with $title")
+        }
+    }
 
     LaunchedEffect(address) {
         viewModel.openConversation(address.orEmpty())
@@ -236,8 +306,33 @@ fun ConversationScreen(
     val displayTitle = remember(recipient, contacts) { viewModel.contactName(recipient) ?: recipient }
     val canSend = recipient.isNotBlank() && body.isNotBlank()
 
+    // On-device reply suggestions for the newest incoming message. Computed
+    // locally from the last message's words; nothing leaves the device.
+    val lastIncomingBody = remember(chatItems) {
+        chatItems.asReversed()
+            .firstOrNull { it is ChatItem.Sms && it.message.type == Telephony.Sms.MESSAGE_TYPE_INBOX }
+            ?.let { (it as ChatItem.Sms).message.body }
+            .orEmpty()
+    }
+    val replySuggestions = remember(lastIncomingBody, smartRepliesEnabled, isNew) {
+        if (smartRepliesEnabled && !isNew && lastIncomingBody.isNotBlank()) {
+            SmartReplyEngine.suggestions(lastIncomingBody)
+        } else {
+            emptyList()
+        }
+    }
+
     val clearSelection = { selectedIds = emptySet() }
     BackHandler(enabled = selecting) { clearSelection() }
+
+    // Keep the draft in the conversation: save as the user types (debounced),
+    // clear it once the message is sent or scheduled.
+    LaunchedEffect(address, body) {
+        val target = address ?: return@LaunchedEffect
+        if (isNew) return@LaunchedEffect
+        delay(400)
+        if (body.isBlank()) viewModel.clearDraft(target) else viewModel.setDraft(target, body)
+    }
 
     // Sends the current draft (or asks for the default-SMS role first) and
     // flags the thread to scroll to the newly created balloon.
@@ -247,6 +342,7 @@ fun ConversationScreen(
         } else if (canSend) {
             viewModel.sendSms(recipient, body, chosenSubId)
             body = ""
+            viewModel.clearDraft(address.orEmpty())
             jumpToLatest = true
         }
     }
@@ -289,11 +385,17 @@ fun ConversationScreen(
                         }
                     },
                     actions = {
-                        IconButton(onClick = { copyText(selectedMessages.sortedBy { it.timestamp }.joinToString("\n") { it.body }) }) {
+                        IconButton(onClick = { copyText(selectedItems.sortedBy { it.time }.joinToString("\n") { it.body }) }) {
                             Icon(Icons.Filled.ContentCopy, contentDescription = "Copy")
                         }
-                        IconButton(onClick = { shareText(context, selectedMessages.sortedBy { it.timestamp }.joinToString("\n") { it.body }) }) {
+                        IconButton(onClick = { shareText(context, selectedItems.sortedBy { it.time }.joinToString("\n") { it.body }) }) {
                             Icon(Icons.Filled.Share, contentDescription = "Share")
+                        }
+                        IconButton(onClick = {
+                            viewModel.saveMessages(selectedItems.sortedBy { it.time }.map { it.body })
+                            clearSelection()
+                        }) {
+                            Icon(Icons.Filled.Bookmark, contentDescription = "Save to Saved messages")
                         }
                         IconButton(onClick = { showDeleteSelectedDialog = true }) {
                             Icon(Icons.Filled.Delete, contentDescription = "Delete")
@@ -317,6 +419,22 @@ fun ConversationScreen(
                     },
                     onCopyNumber = { copyText(recipient) },
                     onDeleteConversation = { showDeleteDialog = true },
+                    notifyEnabled = convState.notify,
+                    soundEnabled = convState.sound,
+                    pinned = convState.pinned,
+                    archived = convState.archived,
+                    locked = convState.locked,
+                    onToggleNotify = { viewModel.setConversationNotify(recipient, !convState.notify) },
+                    onToggleSound = { viewModel.setConversationSound(recipient, !convState.sound) },
+                    onTogglePin = { viewModel.setConversationPinned(recipient, !convState.pinned) },
+                    onToggleArchive = { viewModel.setConversationArchived(recipient, !convState.archived) },
+                    onToggleLock = { viewModel.setConversationLocked(recipient, !convState.locked) },
+                    onExportPdf = {
+                        val safe = (viewModel.contactName(recipient) ?: recipient)
+                            .replace(Regex("[^A-Za-z0-9\\u0600-\\u06FF]+"), "-")
+                            .ifBlank { "conversation" }
+                        pdfLauncher.launch("$safe.pdf")
+                    },
                 )
             }
         },
@@ -327,6 +445,22 @@ fun ConversationScreen(
                     // keyboard is closed; the Scaffold's imePadding consumes the
                     // same insets while the keyboard is open, so no double padding.
                     Column(modifier = Modifier.navigationBarsPadding()) {
+                        if (body.isBlank() && replySuggestions.isNotEmpty()) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .horizontalScroll(rememberScrollState())
+                                    .padding(horizontal = 12.dp, vertical = 4.dp),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            ) {
+                                replySuggestions.forEach { suggestion ->
+                                    AssistChip(
+                                        onClick = { body = suggestion },
+                                        label = { Text(suggestion) },
+                                    )
+                                }
+                            }
+                        }
                         HorizontalDivider()
                         Row(
                             modifier = Modifier
@@ -359,6 +493,7 @@ fun ConversationScreen(
                                         pickDateTime(context) { at ->
                                             if (viewModel.scheduleMessage(recipient, body, at, chosenSubId)) {
                                                 body = ""
+                                                viewModel.clearDraft(address.orEmpty())
                                                 jumpToLatest = true
                                             }
                                         }
@@ -489,14 +624,15 @@ fun ConversationScreen(
                                 is ChatItem.Sms -> MessageBubble(
                                     message = item.message,
                                     selecting = selecting,
-                                    selected = item.message.id in selectedIds,
-                                    onToggleSelect = { selectedIds = toggleSelection(selectedIds, item.message.id) },
-                                    onStartSelect = { selectedIds = selectedIds + item.message.id },
+                                    selected = item.key in selectedIds,
+                                    onToggleSelect = { selectedIds = toggleSelection(selectedIds, item.key) },
+                                    onStartSelect = { selectedIds = selectedIds + item.key },
                                     onCopy = { copyText(item.message.body) },
                                     onCopyAccount = copyAccount,
                                     onCallNumber = dialNumber,
                                     onForward = { onForward(item.message.body) },
                                     onShare = { shareText(context, item.message.body) },
+                                    onSave = { viewModel.saveMessages(listOf(item.message.body)) },
                                     onRetry = {
                                         viewModel.retrySend(item.message.id, item.message.address, item.message.body, chosenSubId)
                                     },
@@ -515,8 +651,22 @@ fun ConversationScreen(
                                 )
                                 is ChatItem.Quarantined -> QuarantinedBubble(
                                     message = item.message,
+                                    selecting = selecting,
+                                    selected = item.key in selectedIds,
+                                    onToggleSelect = { selectedIds = toggleSelection(selectedIds, item.key) },
+                                    onStartSelect = { selectedIds = selectedIds + item.key },
+                                    menuOpen = menuQuarantine?.id == item.message.id,
+                                    onOpenMenu = { menuQuarantine = item.message },
+                                    onMenuDismiss = { menuQuarantine = null },
+                                    onCopy = { copyText(item.message.body) },
                                     onCopyAccount = copyAccount,
                                     onCallNumber = dialNumber,
+                                    onForward = { onForward(item.message.body) },
+                                    onShare = { shareText(context, item.message.body) },
+                                    onSave = { viewModel.saveMessages(listOf(item.message.body)) },
+                                    onNotSpam = { viewModel.markNotSpam(item.message) },
+                                    onRestore = { viewModel.restore(item.message) },
+                                    onDelete = { viewModel.deleteMessage(item.message.id) },
                                 )
                             }
                         }
@@ -592,7 +742,8 @@ fun ConversationScreen(
             confirmButton = {
                 TextButton(onClick = {
                     showDeleteSelectedDialog = false
-                    viewModel.deleteMessages(selectedMessages)
+                    if (selectedSms.isNotEmpty()) viewModel.deleteMessages(selectedSms)
+                    if (selectedQuarantineIds.isNotEmpty()) viewModel.deleteMessages(selectedQuarantineIds)
                     clearSelection()
                 }) { Text("Delete") }
             },
@@ -604,7 +755,7 @@ fun ConversationScreen(
 }
 
 /** Adds [id] to [selected] when absent, removes it when present. */
-private fun toggleSelection(selected: Set<Long>, id: Long): Set<Long> =
+private fun toggleSelection(selected: Set<String>, id: String): Set<String> =
     if (id in selected) selected - id else selected + id
 
 /** The normal conversation header with the avatar, title and overflow menu. */
@@ -619,6 +770,17 @@ private fun ConversationTopBar(
     onCall: () -> Unit,
     onCopyNumber: () -> Unit,
     onDeleteConversation: () -> Unit,
+    notifyEnabled: Boolean,
+    soundEnabled: Boolean,
+    pinned: Boolean,
+    archived: Boolean,
+    locked: Boolean,
+    onToggleNotify: () -> Unit,
+    onToggleSound: () -> Unit,
+    onTogglePin: () -> Unit,
+    onToggleArchive: () -> Unit,
+    onToggleLock: () -> Unit,
+    onExportPdf: () -> Unit,
 ) {
     TopAppBar(
         title = {
@@ -678,6 +840,70 @@ private fun ConversationTopBar(
                             onClick = {
                                 onShowConversationMenu(false)
                                 onCopyNumber()
+                            },
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Export as PDF") },
+                            leadingIcon = { Icon(Icons.Filled.PictureAsPdf, contentDescription = null) },
+                            onClick = {
+                                onShowConversationMenu(false)
+                                onExportPdf()
+                            },
+                        )
+                        HorizontalDivider()
+                        DropdownMenuItem(
+                            text = { Text(if (notifyEnabled) "Mute notifications" else "Unmute notifications") },
+                            leadingIcon = {
+                                Icon(
+                                    if (notifyEnabled) Icons.Filled.NotificationsOff else Icons.Filled.Notifications,
+                                    contentDescription = null,
+                                )
+                            },
+                            onClick = {
+                                onShowConversationMenu(false)
+                                onToggleNotify()
+                            },
+                        )
+                        DropdownMenuItem(
+                            text = { Text(if (soundEnabled) "Silence sound" else "Enable sound") },
+                            leadingIcon = {
+                                Icon(
+                                    if (soundEnabled) Icons.Filled.VolumeOff else Icons.Filled.VolumeUp,
+                                    contentDescription = null,
+                                )
+                            },
+                            onClick = {
+                                onShowConversationMenu(false)
+                                onToggleSound()
+                            },
+                        )
+                        DropdownMenuItem(
+                            text = { Text(if (pinned) "Unpin" else "Pin") },
+                            leadingIcon = { Icon(Icons.Filled.PushPin, contentDescription = null) },
+                            onClick = {
+                                onShowConversationMenu(false)
+                                onTogglePin()
+                            },
+                        )
+                        DropdownMenuItem(
+                            text = { Text(if (archived) "Unarchive" else "Archive") },
+                            leadingIcon = { Icon(Icons.Filled.Archive, contentDescription = null) },
+                            onClick = {
+                                onShowConversationMenu(false)
+                                onToggleArchive()
+                            },
+                        )
+                        DropdownMenuItem(
+                            text = { Text(if (locked) "Remove lock" else "Lock conversation") },
+                            leadingIcon = {
+                                Icon(
+                                    if (locked) Icons.Filled.LockOpen else Icons.Filled.Lock,
+                                    contentDescription = null,
+                                )
+                            },
+                            onClick = {
+                                onShowConversationMenu(false)
+                                onToggleLock()
                             },
                         )
                         HorizontalDivider()
@@ -904,6 +1130,7 @@ private fun MessageBubble(
     onCallNumber: (String) -> Unit,
     onForward: () -> Unit,
     onShare: () -> Unit,
+    onSave: () -> Unit,
     onRetry: () -> Unit,
     onDelete: () -> Unit,
     onMenuDismiss: () -> Unit,
@@ -1027,6 +1254,11 @@ private fun MessageBubble(
                 leadingIcon = { Icon(Icons.Filled.Share, contentDescription = null) },
                 onClick = { onMenuDismiss(); onShare() },
             )
+            DropdownMenuItem(
+                text = { Text("Save to Saved messages") },
+                leadingIcon = { Icon(Icons.Filled.Bookmark, contentDescription = null) },
+                onClick = { onMenuDismiss(); onSave() },
+            )
             if (message.status == SendStatus.FAILED) {
                 DropdownMenuItem(
                     text = { Text("Retry") },
@@ -1059,6 +1291,7 @@ private fun ScheduledBubble(
     onDelete: () -> Unit,
 ) {
     val pending = message.status == ScheduledStatus.PENDING
+    val queued = message.queued
     BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
         val maxBubbleWidth = maxWidth * 0.82f
         Row(
@@ -1091,7 +1324,11 @@ private fun ScheduledBubble(
                             modifier = Modifier.size(14.dp),
                         )
                         Text(
-                            text = if (pending) "Scheduled" else "Failed to send",
+                            text = when {
+                                queued && pending -> "Queued — ${message.lastError.ifBlank { "no signal" }}"
+                                pending -> "Scheduled"
+                                else -> "Failed to send"
+                            },
                             style = MaterialTheme.typography.labelSmall,
                             fontWeight = FontWeight.SemiBold,
                         )
@@ -1104,20 +1341,29 @@ private fun ScheduledBubble(
                         onCallNumber = onCallNumber,
                     )
                     Text(
-                        text = if (pending) {
-                            "Send at ${formatDateTime(message.sendAt)}"
-                        } else {
-                            "Was due ${formatDateTime(message.sendAt)}"
+                        text = when {
+                            queued && pending ->
+                                "Retrying at ${formatDateTime(message.sendAt)} (attempt ${message.attempts + 1})"
+                            pending -> "Send at ${formatDateTime(message.sendAt)}"
+                            message.lastError.isNotBlank() ->
+                                "${message.lastError} — was due ${formatDateTime(message.sendAt)}"
+                            else -> "Was due ${formatDateTime(message.sendAt)}"
                         },
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onTertiaryContainer.copy(alpha = 0.8f),
                     )
                     Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                        if (pending) {
-                            TextButton(onClick = onCancel) { Text("Cancel") }
-                        } else {
-                            TextButton(onClick = onRetry) { Text("Retry") }
-                            TextButton(onClick = onDelete) { Text("Delete") }
+                        when {
+                            queued -> {
+                                TextButton(onClick = onRetry) { Text("Send now") }
+                                TextButton(onClick = onCancel) { Text("Stop") }
+                                TextButton(onClick = onDelete) { Text("Delete") }
+                            }
+                            pending -> TextButton(onClick = onCancel) { Text("Cancel") }
+                            else -> {
+                                TextButton(onClick = onRetry) { Text("Retry") }
+                                TextButton(onClick = onDelete) { Text("Delete") }
+                            }
                         }
                     }
                 }
@@ -1128,21 +1374,52 @@ private fun ScheduledBubble(
 
 /**
  * Balloon for a message the filter quarantined from this sender. It is gone
- * from the system provider, so it is shown here (read-only, error-tinted) with
- * the rule that caught it; act on it from the Blocked tab.
+ * from the system provider, so it is shown here (error-tinted) with the rule
+ * that caught it. Like every other balloon it is tappable (menu), long-press
+ * selects it, and it participates in multi-select copy/share/delete; the menu
+ * additionally offers Not spam and Restore.
  */
 @Composable
 private fun QuarantinedBubble(
     message: QuarantineMessage,
+    selecting: Boolean,
+    selected: Boolean,
+    onToggleSelect: () -> Unit,
+    onStartSelect: () -> Unit,
+    menuOpen: Boolean,
+    onOpenMenu: () -> Unit,
+    onMenuDismiss: () -> Unit,
+    onCopy: () -> Unit,
     onCopyAccount: (String) -> Unit,
     onCallNumber: (String) -> Unit,
+    onForward: () -> Unit,
+    onShare: () -> Unit,
+    onSave: () -> Unit,
+    onNotSpam: () -> Unit,
+    onRestore: () -> Unit,
+    onDelete: () -> Unit,
 ) {
     BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
         val maxBubbleWidth = maxWidth * 0.82f
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.Start,
+            verticalAlignment = Alignment.CenterVertically,
         ) {
+            if (selecting) {
+                Icon(
+                    imageVector = if (selected) Icons.Filled.CheckCircle else Icons.Filled.RadioButtonUnchecked,
+                    contentDescription = if (selected) "Deselect" else "Select",
+                    tint = if (selected) {
+                        MaterialTheme.colorScheme.primary
+                    } else {
+                        MaterialTheme.colorScheme.onSurfaceVariant
+                    },
+                    modifier = Modifier
+                        .padding(horizontal = 6.dp)
+                        .size(22.dp),
+                )
+            }
             Surface(
                 color = MaterialTheme.colorScheme.errorContainer,
                 contentColor = MaterialTheme.colorScheme.onErrorContainer,
@@ -1152,51 +1429,109 @@ private fun QuarantinedBubble(
                     bottomStart = 4.dp,
                     bottomEnd = 18.dp,
                 ),
-                border = BorderStroke(1.dp, MaterialTheme.colorScheme.error),
-                modifier = Modifier.widthIn(max = maxBubbleWidth),
+                border = BorderStroke(
+                    if (selected) 2.dp else 1.dp,
+                    if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error,
+                ),
+                modifier = Modifier
+                    .widthIn(max = maxBubbleWidth)
+                    .combinedClickable(
+                        onClick = { if (selecting) onToggleSelect() else onOpenMenu() },
+                        onLongClick = { if (selecting) onToggleSelect() else onStartSelect() },
+                    ),
             ) {
-                Column(
-                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
-                    verticalArrangement = Arrangement.spacedBy(2.dp),
-                ) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                val contentDirection =
+                    if (isRtl(message.body)) LayoutDirection.Rtl else LayoutDirection.Ltr
+                CompositionLocalProvider(LocalLayoutDirection provides contentDirection) {
+                    Column(
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                        verticalArrangement = Arrangement.spacedBy(2.dp),
                     ) {
-                        Icon(
-                            imageVector = Icons.Filled.Shield,
-                            contentDescription = null,
-                            modifier = Modifier.size(14.dp),
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        ) {
+                            Icon(
+                                imageVector = Icons.Filled.Shield,
+                                contentDescription = null,
+                                modifier = Modifier.size(14.dp),
+                            )
+                            Text(
+                                text = "Blocked",
+                                style = MaterialTheme.typography.labelSmall,
+                                fontWeight = FontWeight.SemiBold,
+                            )
+                        }
+                        MessageText(
+                            text = message.body,
+                            style = MaterialTheme.typography.bodyMedium,
+                            linkColor = MaterialTheme.colorScheme.onErrorContainer,
+                            onCopyAccount = onCopyAccount,
+                            onCallNumber = onCallNumber,
                         )
                         Text(
-                            text = "Blocked",
-                            style = MaterialTheme.typography.labelSmall,
-                            fontWeight = FontWeight.SemiBold,
-                        )
-                    }
-                    MessageText(
-                        text = message.body,
-                        style = MaterialTheme.typography.bodyMedium,
-                        linkColor = MaterialTheme.colorScheme.onErrorContainer,
-                        onCopyAccount = onCopyAccount,
-                        onCallNumber = onCallNumber,
-                    )
-                    Text(
-                        text = formatTime(message.timestamp),
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onErrorContainer.copy(alpha = 0.8f),
-                    )
-                    message.matchedRuleName?.let { rule ->
-                        Text(
-                            text = "Matched: $rule",
+                            text = formatTime(message.timestamp),
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onErrorContainer.copy(alpha = 0.8f),
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
                         )
+                        message.matchedRuleName?.let { rule ->
+                            Text(
+                                text = "Matched: $rule",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onErrorContainer.copy(alpha = 0.8f),
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        }
                     }
                 }
             }
+        }
+    }
+    if (!selecting) {
+        DropdownMenu(
+            expanded = menuOpen,
+            onDismissRequest = onMenuDismiss,
+        ) {
+            DropdownMenuItem(
+                text = { Text("Copy") },
+                leadingIcon = { Icon(Icons.Filled.ContentCopy, contentDescription = null) },
+                onClick = { onMenuDismiss(); onCopy() },
+            )
+            DropdownMenuItem(
+                text = { Text("Forward") },
+                leadingIcon = { Icon(Icons.AutoMirrored.Filled.Send, contentDescription = null) },
+                onClick = { onMenuDismiss(); onForward() },
+            )
+            DropdownMenuItem(
+                text = { Text("Share") },
+                leadingIcon = { Icon(Icons.Filled.Share, contentDescription = null) },
+                onClick = { onMenuDismiss(); onShare() },
+            )
+            DropdownMenuItem(
+                text = { Text("Save to Saved messages") },
+                leadingIcon = { Icon(Icons.Filled.Bookmark, contentDescription = null) },
+                onClick = { onMenuDismiss(); onSave() },
+            )
+            HorizontalDivider()
+            DropdownMenuItem(
+                text = { Text("Not spam") },
+                leadingIcon = { Icon(Icons.Filled.Check, contentDescription = null) },
+                onClick = { onMenuDismiss(); onNotSpam() },
+            )
+            if (message.status != QuarantineStatus.RESTORED) {
+                DropdownMenuItem(
+                    text = { Text("Restore to Messages") },
+                    leadingIcon = { Icon(Icons.Filled.Restore, contentDescription = null) },
+                    onClick = { onMenuDismiss(); onRestore() },
+                )
+            }
+            HorizontalDivider()
+            DropdownMenuItem(
+                text = { Text("Delete permanently") },
+                leadingIcon = { Icon(Icons.Filled.Delete, contentDescription = null) },
+                onClick = { onMenuDismiss(); onDelete() },
+            )
         }
     }
 }

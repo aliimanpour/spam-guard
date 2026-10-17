@@ -54,4 +54,24 @@ object ContactsResolver {
     /** The contact name for [address], or null when it is not a known contact. */
     fun displayName(address: String, names: Map<String, String>): String? =
         names[normalize(address)]?.takeIf { it.isNotBlank() }
+
+    /**
+     * True when [address] belongs to a saved system contact. Cheap single-row
+     * lookup, used to decide whether an unknown sender may be notified.
+     */
+    fun isKnown(context: Context, address: String): Boolean = try {
+        context.contentResolver.query(
+            android.net.Uri.withAppendedPath(
+                ContactsContract.PhoneLookup.CONTENT_FILTER_URI,
+                android.net.Uri.encode(address),
+            ),
+            arrayOf(ContactsContract.PhoneLookup._ID),
+            null,
+            null,
+            null,
+        )?.use { cursor -> cursor.moveToFirst() } ?: false
+    } catch (_: Exception) {
+        // No READ_CONTACTS or provider unavailable: treat as unknown.
+        false
+    }
 }

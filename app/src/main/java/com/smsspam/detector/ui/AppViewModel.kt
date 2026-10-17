@@ -15,13 +15,26 @@ import com.smsspam.detector.contacts.ContactsResolver
 import com.smsspam.detector.contacts.Recipient
 import com.smsspam.detector.contacts.RecipientDirectory
 import com.smsspam.detector.data.DataTransfer
+import com.smsspam.detector.engine.AutomationEngine
 import com.smsspam.detector.engine.RuleEngine
+import com.smsspam.detector.notify.Notifier
+import com.smsspam.detector.model.AutoReply
+import com.smsspam.detector.model.ContactEntry
+import com.smsspam.detector.model.ContactGroup
+import com.smsspam.detector.model.ConversationSettings
+import com.smsspam.detector.model.PendingFollowUp
 import com.smsspam.detector.model.QuarantineMessage
 import com.smsspam.detector.model.QuarantineStatus
 import com.smsspam.detector.model.Rule
+import com.smsspam.detector.model.SavedMessage
 import com.smsspam.detector.model.ScheduledMessage
 import com.smsspam.detector.model.ScheduledStatus
+import com.smsspam.detector.model.Workflow
+import com.smsspam.detector.model.WorkflowTrigger
+import com.smsspam.detector.sms.AutomationRunner
+import com.smsspam.detector.sms.ConversationPdf
 import com.smsspam.detector.sms.SmsAlarmScheduler
+import com.smsspam.detector.sms.WorkflowScheduler
 import com.smsspam.detector.sms.SmsConversation
 import com.smsspam.detector.sms.SmsInbox
 import com.smsspam.detector.sms.SmsMessage
@@ -29,10 +42,13 @@ import com.smsspam.detector.sms.SmsSender
 import com.smsspam.detector.sms.SmsSims
 import com.smsspam.detector.sms.SmsThreadPage
 import com.smsspam.detector.sms.SmsThreads
+import com.smsspam.detector.sms.SendQueue
 import com.smsspam.detector.sms.SendStatus
 import com.smsspam.detector.sms.SimSubscription
 import com.smsspam.detector.sms.ThreadCache
 import com.smsspam.detector.sms.restoreToInbox
+import com.smsspam.detector.ui.theme.ThemeMode
+import com.smsspam.detector.ui.theme.ThemePalette
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -68,6 +84,9 @@ sealed interface OlderState {
     /** Every message of the thread is loaded. */
     data object EndReached : OlderState
 }
+
+/** How long a delete can be undone before it is committed. */
+private const val DELETE_UNDO_MILLIS = 7_000L
 
 class AppViewModel(app: Application) : AndroidViewModel(app) {
 
@@ -108,6 +127,347 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun setDeliveryReports(enabled: Boolean) {
         container.settingsStore.deliveryReports = enabled
         _deliveryReports.value = enabled
+    }
+
+    // --- Sending & replies --------------------------------------------------
+
+    /**
+     * When true (default), a message that fails to send with no signal is
+     * queued and retried automatically with a growing backoff instead of being
+     * dropped.
+     */
+    private val _autoRetry = MutableStateFlow(container.settingsStore.autoRetry)
+    val autoRetry: StateFlow<Boolean> = _autoRetry.asStateFlow()
+
+    fun setAutoRetry(enabled: Boolean) {
+        container.settingsStore.autoRetry = enabled
+        _autoRetry.value = enabled
+    }
+
+    /** When true (default), on-device reply suggestions are offered in a thread. */
+    private val _smartReplies = MutableStateFlow(container.settingsStore.smartReplies)
+    val smartReplies: StateFlow<Boolean> = _smartReplies.asStateFlow()
+
+    fun setSmartReplies(enabled: Boolean) {
+        container.settingsStore.smartReplies = enabled
+        _smartReplies.value = enabled
+    }
+
+    // --- Appearance (theme) -------------------------------------------------
+
+    /** Light/dark/system theme selection. */
+    private val _themeMode = MutableStateFlow(ThemeMode.fromId(container.settingsStore.themeMode))
+    val themeMode: StateFlow<ThemeMode> = _themeMode.asStateFlow()
+
+    /** Accent color palette (or system dynamic color). */
+    private val _palette = MutableStateFlow(ThemePalette.fromId(container.settingsStore.palette))
+    val palette: StateFlow<ThemePalette> = _palette.asStateFlow()
+
+    /** True when dark themes paint a true-black background for AMOLED screens. */
+    private val _amoledDark = MutableStateFlow(container.settingsStore.amoledDark)
+    val amoledDark: StateFlow<Boolean> = _amoledDark.asStateFlow()
+
+    fun setThemeMode(mode: ThemeMode) {
+        container.settingsStore.themeMode = mode.id
+        _themeMode.value = mode
+    }
+
+    fun setPalette(palette: ThemePalette) {
+        container.settingsStore.palette = palette.id
+        _palette.value = palette
+    }
+
+    fun setAmoledDark(enabled: Boolean) {
+        container.settingsStore.amoledDark = enabled
+        _amoledDark.value = enabled
+    }
+
+    // --- Saved messages -----------------------------------------------------
+
+    /** Notes the user saved to themselves, oldest first. */
+    val savedMessages: StateFlow<List<SavedMessage>> = container.savedMessagesRepository.messages
+
+    /** Saves [body] as a note to self. Returns false for a blank body. */
+    fun saveMessage(body: String): Boolean {
+        val trimmed = body.trim()
+        if (trimmed.isEmpty()) return false
+        container.savedMessagesRepository.add(SavedMessage(body = trimmed))
+        _events.value = UiEvent.Message("Saved")
+        return true
+    }
+
+    /**
+     * Saves one or more message bodies to Saved messages in a single action —
+     * used by the per-message "Save" item and the multi-select Save button.
+     */
+    fun saveMessages(bodies: List<String>) {
+        val notes = bodies.map { it.trim() }.filter { it.isNotEmpty() }
+        if (notes.isEmpty()) return
+        notes.forEach { container.savedMessagesRepository.add(SavedMessage(body = it)) }
+        _events.value = UiEvent.Message(
+            if (notes.size == 1) "Saved to Saved messages" else "Saved ${notes.size} messages"
+        )
+    }
+
+    /** Deletes several saved messages in one write. */
+    fun deleteSavedMessages(ids: Set<String>) {
+        if (ids.isEmpty()) return
+        container.savedMessagesRepository.deleteAll(ids)
+        _events.value = UiEvent.Message(
+            if (ids.size == 1) "Message deleted" else "Deleted ${ids.size} messages"
+        )
+    }
+
+    // --- Auto-replies -------------------------------------------------------
+
+    val autoReplies: StateFlow<List<AutoReply>> = container.autoReplyRepository.replies
+
+    fun saveAutoReply(reply: AutoReply) {
+        container.autoReplyRepository.save(reply)
+        _events.value = UiEvent.Message("Auto-reply saved")
+    }
+
+    fun deleteAutoReply(id: String) {
+        container.autoReplyRepository.delete(id)
+    }
+
+    fun setAutoReplyEnabled(id: String, enabled: Boolean) {
+        container.autoReplyRepository.setEnabled(id, enabled)
+    }
+
+    // --- Workflows ----------------------------------------------------------
+
+    val workflows: StateFlow<List<Workflow>> = container.workflowRepository.workflows
+    val followUps: StateFlow<List<PendingFollowUp>> = container.followUpRepository.pending
+
+    /** Saves a workflow and keeps its reminder/follow-up alarms in sync. */
+    fun saveWorkflow(workflow: Workflow) {
+        val previous = workflows.value.firstOrNull { it.id == workflow.id }
+        container.workflowRepository.save(workflow)
+        val app = getApplication<Application>()
+        WorkflowScheduler.cancelReminder(app, workflow.id)
+        if (workflow.enabled && workflow.trigger == WorkflowTrigger.REMINDER &&
+            workflow.triggerAt > System.currentTimeMillis()
+        ) {
+            WorkflowScheduler.scheduleReminder(app, workflow)
+        }
+        // A workflow that is no longer a follow-up drops its queued follow-ups.
+        if (previous?.trigger == WorkflowTrigger.FOLLOW_UP && workflow.trigger != WorkflowTrigger.FOLLOW_UP) {
+            container.followUpRepository.removeForWorkflow(workflow.id).forEach {
+                WorkflowScheduler.cancelFollowUp(app, it.id)
+            }
+        }
+        _events.value = UiEvent.Message("Workflow saved")
+    }
+
+    fun deleteWorkflow(id: String) {
+        val app = getApplication<Application>()
+        WorkflowScheduler.cancelReminder(app, id)
+        container.followUpRepository.removeForWorkflow(id).forEach {
+            WorkflowScheduler.cancelFollowUp(app, it.id)
+        }
+        container.workflowRepository.delete(id)
+    }
+
+    fun setWorkflowEnabled(id: String, enabled: Boolean) {
+        val workflow = workflows.value.firstOrNull { it.id == id } ?: return
+        val updated = workflow.copy(enabled = enabled)
+        container.workflowRepository.setEnabled(id, enabled)
+        val app = getApplication<Application>()
+        WorkflowScheduler.cancelReminder(app, id)
+        if (enabled && updated.trigger == WorkflowTrigger.REMINDER &&
+            updated.triggerAt > System.currentTimeMillis()
+        ) {
+            WorkflowScheduler.scheduleReminder(app, updated)
+        }
+    }
+
+    /** Recipients a reminder workflow would message (for the editor preview). */
+    fun recipientsForWorkflow(workflow: Workflow): List<String> =
+        AutomationRunner.recipientsFor(container, workflow)
+
+    // --- Contacts, tags & groups -------------------------------------------
+
+    val contactBook: StateFlow<List<ContactEntry>> = container.contactsRepository.contacts
+    val groups: StateFlow<List<ContactGroup>> = container.contactsRepository.groups
+
+    fun allTags(): List<String> = container.contactsRepository.allTags()
+
+    /** Numbers in a saved group (for the bulk-send recipient preview). */
+    fun numbersInGroup(groupId: String): List<String> = container.contactsRepository.numbersInGroup(groupId)
+
+    /** Numbers carrying a tag (for the bulk-send recipient preview). */
+    fun numbersWithTag(tag: String): List<String> = container.contactsRepository.numbersWithTag(tag)
+
+    fun saveContact(contact: ContactEntry) {
+        container.contactsRepository.saveContact(contact)
+    }
+
+    fun deleteContact(id: String) {
+        container.contactsRepository.deleteContact(id)
+    }
+
+    fun saveGroup(group: ContactGroup) {
+        container.contactsRepository.saveGroup(group)
+        _events.value = UiEvent.Message("Group saved")
+    }
+
+    fun deleteGroup(id: String) {
+        container.contactsRepository.deleteGroup(id)
+    }
+
+    // --- Bulk sending -------------------------------------------------------
+
+    /** Sends [body] to up to [MAX_BULK_CONTACTS] recipients, one SMS each. */
+    fun sendBulk(recipients: List<String>, body: String, subId: Int = 0) {
+        val targets = bulkTargets(recipients)
+        if (targets.isEmpty() || body.isBlank()) return
+        viewModelScope.launch {
+            val app = getApplication<Application>()
+            val ok = withContext(Dispatchers.IO) { SmsSender.send(app, targets, body, subId) }
+            _events.value = UiEvent.Message(
+                if (ok) "Sent to ${targets.size} contacts" else "Unable to send bulk message"
+            )
+            if (ok) refreshConversations(force = true)
+        }
+    }
+
+    /** Queues [body] for every recipient at [sendAt]. */
+    fun scheduleBulk(recipients: List<String>, body: String, sendAt: Long, subId: Int = 0) {
+        val targets = bulkTargets(recipients)
+        if (targets.isEmpty() || body.isBlank()) return
+        val app = getApplication<Application>()
+        targets.forEach { recipient ->
+            val message = ScheduledMessage(
+                recipient = recipient,
+                body = body,
+                sendAt = sendAt,
+                subId = subId,
+            )
+            container.scheduleRepository.add(message)
+            SmsAlarmScheduler.schedule(app, message)
+        }
+        _events.value = UiEvent.Message("Scheduled for ${targets.size} contacts")
+    }
+
+    /** Deduplicated recipients, capped at the bulk limit. */
+    private fun bulkTargets(recipients: List<String>): List<String> =
+        AutomationEngine.dedupeNumbers(recipients).take(MAX_BULK_CONTACTS)
+
+    // --- Per-conversation settings -----------------------------------------
+
+    val conversationSettings: StateFlow<Map<String, ConversationSettings>> =
+        container.conversationSettings.settings
+
+    fun setConversationNotify(address: String, enabled: Boolean) =
+        container.conversationSettings.setNotify(address, enabled)
+
+    fun setConversationSound(address: String, enabled: Boolean) =
+        container.conversationSettings.setSound(address, enabled)
+
+    fun setConversationPinned(address: String, pinned: Boolean) =
+        container.conversationSettings.setPinned(address, pinned)
+
+    fun setConversationArchived(address: String, archived: Boolean) =
+        container.conversationSettings.setArchived(address, archived)
+
+    fun setConversationLocked(address: String, locked: Boolean) =
+        container.conversationSettings.setLocked(address, locked)
+
+    /** The saved draft for [address], or blank. */
+    fun draft(address: String): String = container.conversationSettings.draft(address)
+
+    fun setDraft(address: String, text: String) {
+        if (address.isBlank()) return
+        container.conversationSettings.setDraft(address, text)
+    }
+
+    fun clearDraft(address: String) {
+        if (address.isBlank()) return
+        container.conversationSettings.clearDraft(address)
+    }
+
+    // --- App lock -----------------------------------------------------------
+
+    private val _appLockEnabled = MutableStateFlow(container.appLockStore.enabled)
+    val appLockEnabled: StateFlow<Boolean> = _appLockEnabled.asStateFlow()
+
+    private val _appLockDeviceCredential = MutableStateFlow(container.appLockStore.deviceCredential)
+    val appLockDeviceCredential: StateFlow<Boolean> = _appLockDeviceCredential.asStateFlow()
+
+    /** False while the app is locked (session only; resets on process start). */
+    private val _appUnlocked = MutableStateFlow(false)
+    val appUnlocked: StateFlow<Boolean> = _appUnlocked.asStateFlow()
+
+    /** Conversations unlocked for this session (per-conversation lock). */
+    private val _unlockedConversations = MutableStateFlow<Set<String>>(emptySet())
+    val unlockedConversations: StateFlow<Set<String>> = _unlockedConversations.asStateFlow()
+
+    fun appLockHasPin(): Boolean = container.appLockStore.hasPin
+
+    fun setAppLockEnabled(enabled: Boolean) {
+        container.appLockStore.enabled = enabled
+        _appLockEnabled.value = enabled
+        // Don't lock the current session the moment it is switched on; the lock
+        // takes effect on the next launch or when the app goes to background.
+        _appUnlocked.value = true
+    }
+
+    fun setAppLockDeviceCredential(enabled: Boolean) {
+        container.appLockStore.deviceCredential = enabled
+        _appLockDeviceCredential.value = enabled
+    }
+
+    fun setAppPin(pin: String) = container.appLockStore.setPin(pin)
+
+    fun clearAppPin() = container.appLockStore.clearPin()
+
+    fun verifyAppPin(pin: String): Boolean = container.appLockStore.verifyPin(pin)
+
+    fun unlockApp() { _appUnlocked.value = true }
+
+    /** Re-locks the app (called when it goes to the background). */
+    fun lockApp() {
+        if (container.appLockStore.enabled) _appUnlocked.value = false
+    }
+
+    fun unlockConversation(address: String) {
+        _unlockedConversations.value = _unlockedConversations.value + key(address)
+    }
+
+    fun isConversationUnlocked(address: String): Boolean = key(address) in _unlockedConversations.value
+
+    private fun key(address: String): String =
+        ContactsResolver.normalize(address).ifBlank { address.trim() }
+
+    // --- Unknown-number notifications --------------------------------------
+
+    private val _hideUnknownNotifications = MutableStateFlow(container.settingsStore.hideUnknownNotifications)
+    val hideUnknownNotifications: StateFlow<Boolean> = _hideUnknownNotifications.asStateFlow()
+
+    fun setHideUnknownNotifications(enabled: Boolean) {
+        container.settingsStore.hideUnknownNotifications = enabled
+        _hideUnknownNotifications.value = enabled
+    }
+
+    // --- Export -------------------------------------------------------------
+
+    /** Writes the open conversation to a PDF at [uri]. */
+    fun exportConversationPdf(uri: Uri, address: String, title: String) {
+        viewModelScope.launch {
+            val app = getApplication<Application>()
+            val messages = _conversation.value
+            val result = runCatching {
+                withContext(Dispatchers.IO) { ConversationPdf.export(app, uri, title, messages) }
+            }
+            result.onSuccess { count -> Notifier.notifyExport(app, uri, title, count) }
+            _events.value = UiEvent.Message(
+                result.fold(
+                    onSuccess = { "Exported $it messages to PDF" },
+                    onFailure = { "PDF export failed: ${it.message}" },
+                )
+            )
+        }
     }
 
     // --- SIM cards ----------------------------------------------------------
@@ -159,8 +519,21 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     /** The open thread's messages, merged with any in-flight sends, oldest first. */
     val conversation: StateFlow<List<SmsMessage>> =
         combine(_conversation, _pendingSends) { provider, pending ->
-            if (pending.isEmpty()) provider
-            else (provider + pending).distinctBy { it.id }.sortedBy { it.timestamp }
+            if (pending.isEmpty()) {
+                provider
+            } else {
+                // Drop a pending stub the moment its real provider row shows up,
+                // so a just-sent message never appears twice.
+                val outstanding = pending.filterNot { stub ->
+                    provider.any { row ->
+                        row.id > 0L &&
+                            row.address == stub.address &&
+                            row.body == stub.body &&
+                            row.timestamp >= stub.timestamp - 60_000L
+                    }
+                }
+                (provider + outstanding).distinctBy { it.id }.sortedBy { it.timestamp }
+            }
         }.stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
 
     /** True while the first page of a thread the cache has never seen is loading. */
@@ -647,8 +1020,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         _pendingSends.value = _pendingSends.value + pending
         viewModelScope.launch {
             val app = getApplication<Application>()
-            val ok = withContext(Dispatchers.IO) { SmsSender.send(app, recipient, body, subId) }
-            if (ok) {
+            val outcome = withContext(Dispatchers.IO) { SmsSender.sendOutcome(app, recipient, body, subId) }
+            if (outcome.ok) {
                 _events.value = UiEvent.Message("Message sent")
                 // Update the stub to SENT so the checkmark shows while the
                 // provider reload runs.
@@ -660,9 +1033,20 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 delay(300)
                 _pendingSends.value = _pendingSends.value.filterNot { it.id == pendingId }
             } else {
-                _events.value = UiEvent.Message("Unable to send message")
-                _pendingSends.value = _pendingSends.value.map {
-                    if (it.id == pendingId) it.copy(status = SendStatus.FAILED) else it
+                // A transient failure (no signal / airplane mode) is queued and
+                // retried automatically; the stub is dropped so the queued
+                // balloon in the thread is the single source of truth.
+                val queued = withContext(Dispatchers.IO) {
+                    SendQueue.enqueue(app, recipient, body, subId, outcome.failure, attempts = 1)
+                }
+                if (queued != null) {
+                    _pendingSends.value = _pendingSends.value.filterNot { it.id == pendingId }
+                    _events.value = UiEvent.Message("${outcome.failure.message} — queued, will retry")
+                } else {
+                    _events.value = UiEvent.Message("Unable to send: ${outcome.failure.message}")
+                    _pendingSends.value = _pendingSends.value.map {
+                        if (it.id == pendingId) it.copy(status = SendStatus.FAILED) else it
+                    }
                 }
             }
         }
@@ -741,6 +1125,18 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /** Marks the conversation with [address] as read (clears its unread badge). */
+    fun markConversationRead(address: String) {
+        val threadId = _conversations.value.firstOrNull { it.address == address }?.threadId ?: 0L
+        val app = appContext
+        viewModelScope.launch {
+            if (threadId > 0L) {
+                withContext(Dispatchers.IO) { SmsThreads.markThreadRead(app, threadId) }
+            }
+            refreshConversations(force = true)
+        }
+    }
+
     /** Deletes several conversations in one pass, then refreshes the list. */
     fun deleteConversations(addresses: Set<String>) {
         if (addresses.isEmpty()) return
@@ -762,6 +1158,37 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             refreshConversations(force = true)
             _events.value = UiEvent.Message("Deleted ${targets.size} conversations")
         }
+    }
+
+    // --- Undo-able delete ---------------------------------------------------
+
+    /**
+     * Conversations whose deletion is pending the undo window. They are hidden
+     * from the list immediately but only removed from the provider once the
+     * window elapses, so a delete can be undone.
+     */
+    private val _pendingDeletions = MutableStateFlow<Set<String>>(emptySet())
+    val pendingDeletions: StateFlow<Set<String>> = _pendingDeletions.asStateFlow()
+    private var deletionJob: Job? = null
+
+    /** Hides [addresses] now and deletes them after [DELETE_UNDO_MILLIS]. */
+    fun deleteConversationsWithUndo(addresses: Set<String>) {
+        if (addresses.isEmpty()) return
+        _pendingDeletions.value = _pendingDeletions.value + addresses
+        deletionJob?.cancel()
+        deletionJob = viewModelScope.launch {
+            delay(DELETE_UNDO_MILLIS)
+            val targets = _pendingDeletions.value
+            _pendingDeletions.value = emptySet()
+            if (targets.isNotEmpty()) deleteConversations(targets)
+        }
+    }
+
+    /** Cancels a pending delete, restoring the conversation(s) to the list. */
+    fun undoDelete() {
+        deletionJob?.cancel()
+        deletionJob = null
+        _pendingDeletions.value = emptySet()
     }
 
     /** Marks several conversations unread in one pass, then refreshes the list. */
@@ -824,12 +1251,48 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         SmsAlarmScheduler.cancel(getApplication(), id)
         viewModelScope.launch {
             val app = getApplication<Application>()
-            val ok = withContext(Dispatchers.IO) { SmsSender.send(app, message.recipient, message.body) }
-            container.scheduleRepository.updateStatus(
-                id,
-                if (ok) ScheduledStatus.SENT else ScheduledStatus.FAILED,
-            )
-            _events.value = UiEvent.Message(if (ok) "Message sent" else "Unable to send message")
+            val outcome = withContext(Dispatchers.IO) {
+                SmsSender.sendOutcome(
+                    app,
+                    message.recipient,
+                    message.body,
+                    message.subId,
+                    existingRowId = message.providerRowId.takeIf { it > 0L } ?: 0L,
+                )
+            }
+            if (outcome.ok) {
+                container.scheduleRepository.updateStatus(id, ScheduledStatus.SENT)
+                _events.value = UiEvent.Message("Message sent")
+                return@launch
+            }
+            val attempts = message.attempts + 1
+            val requeued = if (outcome.failure.retriable) {
+                withContext(Dispatchers.IO) {
+                    SendQueue.enqueue(
+                        app,
+                        message.recipient,
+                        message.body,
+                        message.subId,
+                        outcome.failure,
+                        attempts,
+                        message.providerRowId,
+                    )
+                }
+            } else {
+                null
+            }
+            if (requeued != null) {
+                _events.value = UiEvent.Message("${outcome.failure.message} — will retry")
+            } else {
+                container.scheduleRepository.update(
+                    message.copy(
+                        status = ScheduledStatus.FAILED,
+                        attempts = attempts,
+                        lastError = outcome.failure.message,
+                    )
+                )
+                _events.value = UiEvent.Message("Unable to send: ${outcome.failure.message}")
+            }
         }
     }
 
@@ -853,6 +1316,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     private companion object {
+        /** Upper bound on recipients in a single bulk send. */
+        const val MAX_BULK_CONTACTS = 100
+
         /** How long the cached conversation list is trusted before a resume re-queries. */
         const val SUMMARIES_FRESH_MS = 15_000L
 

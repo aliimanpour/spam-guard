@@ -67,15 +67,20 @@ class SmsReceiver : BroadcastReceiver() {
                 val deleted = SmsInbox.deleteMatching(context, sender, body, timestamp)
                 Log.i(TAG, "blocked spam from=$sender rule='${match.name}' removedFromInbox=$deleted")
                 AutoUnsubscriber.maybeUnsubscribe(context, sender, body)
-            } else if (isDeliver) {
-                // We are the default SMS app, so we must ensure normal messages are
-                // stored, otherwise the user would lose them.
-                val alreadyStored = SmsInbox.exists(context, sender, body, timestamp)
-                val stored = alreadyStored || SmsInbox.insertIncoming(context, sender, body, timestamp)
-                Log.i(TAG, "allowed message from=$sender alreadyStored=$alreadyStored stored=$stored")
-                Notifier.notifyMessage(context, sender, body)
             } else {
-                Log.i(TAG, "allowed message from=$sender (not default app; left as is)")
+                if (isDeliver) {
+                    // We are the default SMS app, so we must ensure normal messages
+                    // are stored, otherwise the user would lose them.
+                    val alreadyStored = SmsInbox.exists(context, sender, body, timestamp)
+                    val stored = alreadyStored || SmsInbox.insertIncoming(context, sender, body, timestamp)
+                    Log.i(TAG, "allowed message from=$sender alreadyStored=$alreadyStored stored=$stored")
+                    Notifier.notifyMessage(context, sender, body)
+                } else {
+                    Log.i(TAG, "allowed message from=$sender (not default app; left as is)")
+                }
+                // Automation (auto-replies, welcome/keyword workflows, and
+                // cancelling follow-ups) runs only for allowed messages.
+                AutomationRunner.onIncoming(context, container, sender, body)
             }
         }
     }

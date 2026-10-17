@@ -12,9 +12,10 @@ enum class ScheduledStatus(val label: String) {
 }
 
 /**
- * An SMS the user wants to send at a future time. Persisted as JSON in
- * SharedPreferences (see [com.smsspam.detector.data.ScheduleRepository]) and
- * delivered by [com.smsspam.detector.sms.SmsAlarmReceiver].
+ * An SMS the user wants to send at a future time, or one that failed with no
+ * signal and is waiting to be retried. Persisted as JSON in SharedPreferences
+ * (see [com.smsspam.detector.data.ScheduleRepository]) and delivered by
+ * [com.smsspam.detector.sms.SmsAlarmReceiver].
  */
 data class ScheduledMessage(
     val id: String = UUID.randomUUID().toString(),
@@ -25,9 +26,18 @@ data class ScheduledMessage(
     val status: ScheduledStatus = ScheduledStatus.PENDING,
     /** Subscription id of the SIM to send with; 0 = system default SIM. */
     val subId: Int = 0,
+    /** How many times delivery has been attempted (0 = not tried yet). */
+    val attempts: Int = 0,
+    /** Why the last attempt failed, for display ("No signal", …). */
+    val lastError: String = "",
+    /** Provider row to reuse on retry so the message is not duplicated. */
+    val providerRowId: Long = 0L,
 ) {
     /** Stable request code used for the PendingIntent / alarm slot. */
     val requestCode: Int get() = id.hashCode()
+
+    /** True when this entry is an automatic retry of a message we tried to send. */
+    val queued: Boolean get() = attempts > 0
 
     fun toJson(): JSONObject = JSONObject().apply {
         put("id", id)
@@ -37,6 +47,9 @@ data class ScheduledMessage(
         put("createdAt", createdAt)
         put("status", status.name)
         put("subId", subId)
+        put("attempts", attempts)
+        put("lastError", lastError)
+        put("providerRowId", providerRowId)
     }
 
     companion object {
@@ -49,6 +62,9 @@ data class ScheduledMessage(
             status = enumValues<ScheduledStatus>().firstOrNull { it.name == o.optString("status") }
                 ?: ScheduledStatus.PENDING,
             subId = o.optInt("subId", 0),
+            attempts = o.optInt("attempts", 0),
+            lastError = o.optString("lastError"),
+            providerRowId = o.optLong("providerRowId", 0L),
         )
     }
 }

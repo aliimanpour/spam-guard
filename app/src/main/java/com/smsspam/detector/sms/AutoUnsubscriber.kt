@@ -32,7 +32,7 @@ object AutoUnsubscriber {
         val code = resolveCode(settings.unsubscribeCode, body) ?: return null
         val log = app.container.unsubscribeLog
         if (log.alreadySent(sender)) return null
-        val sent = SmsSender.send(context, sender, code)
+        val sent = SmsSender.send(context, sender, code, triggerFollowUp = false)
         Log.i(TAG, "auto unsubscribe to=$sender code=$code sent=$sent")
         return code.takeIf { sent }?.also { log.record(sender) }
     }

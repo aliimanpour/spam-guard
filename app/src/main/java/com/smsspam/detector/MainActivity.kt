@@ -33,7 +33,10 @@ class MainActivity : ComponentActivity() {
         composeTarget.value = intent?.toComposeTarget()
         setContent {
             val target by composeTarget.collectAsStateWithLifecycle()
-            SpamGuardTheme {
+            val themeMode by viewModel.themeMode.collectAsStateWithLifecycle()
+            val palette by viewModel.palette.collectAsStateWithLifecycle()
+            val pureDark by viewModel.amoledDark.collectAsStateWithLifecycle()
+            SpamGuardTheme(themeMode = themeMode, palette = palette, pureDark = pureDark) {
                 AppRoot(
                     viewModel = viewModel,
                     composeTarget = target,
@@ -52,7 +55,12 @@ class MainActivity : ComponentActivity() {
         super.onStop()
         // Leaving the app is the reset point for the Blocked-tab badge; a
         // rotation stops the activity too but is not an exit.
-        if (!isChangingConfigurations) viewModel.markBlockedSeen()
+        if (!isChangingConfigurations) {
+            viewModel.markBlockedSeen()
+            // Re-lock the app when it goes to the background (no-op when the
+            // app lock is off).
+            viewModel.lockApp()
+        }
     }
 }
 

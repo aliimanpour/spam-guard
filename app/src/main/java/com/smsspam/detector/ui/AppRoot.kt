@@ -8,9 +8,11 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Rule
 import androidx.compose.material.icons.automirrored.outlined.Rule
+import androidx.compose.material.icons.filled.Bolt
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Shield
 import androidx.compose.material.icons.filled.Sms
+import androidx.compose.material.icons.outlined.Bolt
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material.icons.outlined.Shield
 import androidx.compose.material.icons.outlined.Sms
@@ -39,12 +41,21 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
+import com.smsspam.detector.ui.screens.AutoReplyEditorScreen
+import com.smsspam.detector.ui.screens.AutoRepliesScreen
+import com.smsspam.detector.ui.screens.AutomationsScreen
+import com.smsspam.detector.ui.screens.ComposeScreen
+import com.smsspam.detector.ui.screens.ContactsScreen
 import com.smsspam.detector.ui.screens.ConversationScreen
 import com.smsspam.detector.ui.screens.ConversationsScreen
 import com.smsspam.detector.ui.screens.QuarantineScreen
 import com.smsspam.detector.ui.screens.RuleEditorScreen
 import com.smsspam.detector.ui.screens.RulesScreen
+import com.smsspam.detector.ui.screens.SavedMessagesScreen
 import com.smsspam.detector.ui.screens.SettingsScreen
+import com.smsspam.detector.ui.screens.WorkflowEditorScreen
+import com.smsspam.detector.ui.screens.WorkflowsScreen
+import com.smsspam.detector.ui.components.LockScreen
 
 /**
  * A "new message" request coming from outside the app (an `sms:`/`smsto:` link
@@ -61,6 +72,15 @@ private object Routes {
     const val QUARANTINE = "quarantine"
     const val RULES = "rules"
     const val SETTINGS = "settings"
+    const val SAVED = "saved"
+    const val AUTOMATIONS = "automations"
+    const val AUTO_REPLIES = "auto_replies"
+    const val AUTO_REPLY_EDITOR = "auto_reply_editor"
+    const val AUTO_REPLY_EDITOR_ARG = "replyId"
+    const val WORKFLOWS = "workflows"
+    const val WORKFLOW_EDITOR = "workflow_editor"
+    const val WORKFLOW_EDITOR_ARG = "workflowId"
+    const val CONTACTS = "contacts"
     const val CONVERSATION = "conversation"
     const val CONVERSATION_ARG = "address"
     const val RULE_EDITOR = "rule_editor"
@@ -70,6 +90,8 @@ private object Routes {
     const val COMPOSE_BODY_ARG = "body"
     fun conversation(address: String) = "$CONVERSATION/${Uri.encode(address)}"
     fun ruleEditor(id: String) = "$RULE_EDITOR/$id"
+    fun autoReplyEditor(id: String) = "$AUTO_REPLY_EDITOR/$id"
+    fun workflowEditor(id: String) = "$WORKFLOW_EDITOR/$id"
     fun compose(recipient: String, body: String) =
         "$COMPOSE?$COMPOSE_RECIPIENT_ARG=${Uri.encode(recipient)}&$COMPOSE_BODY_ARG=${Uri.encode(body)}"
 }
@@ -87,6 +109,23 @@ fun AppRoot(
     composeTarget: ComposeTarget? = null,
     onComposeTargetConsumed: () -> Unit = {},
 ) {
+    // Whole-app lock: when enabled and not yet unlocked this session, show the
+    // lock gate instead of any message content.
+    val appLockEnabled by viewModel.appLockEnabled.collectAsStateWithLifecycle()
+    val appUnlocked by viewModel.appUnlocked.collectAsStateWithLifecycle()
+    val allowDeviceCredential by viewModel.appLockDeviceCredential.collectAsStateWithLifecycle()
+    if (appLockEnabled && !appUnlocked) {
+        LockScreen(
+            title = "Spam Guard is locked",
+            subtitle = "Unlock to see your messages.",
+            hasPin = viewModel.appLockHasPin(),
+            allowDeviceCredential = allowDeviceCredential,
+            onUnlockWithPin = { viewModel.verifyAppPin(it) },
+            onUnlocked = { viewModel.unlockApp() },
+        )
+        return
+    }
+
     val navController = rememberNavController()
     val snackbarHostState = remember { SnackbarHostState() }
     val backStackEntry by navController.currentBackStackEntryAsState()
@@ -96,6 +135,7 @@ fun AppRoot(
         TopLevelDestination(Routes.MESSAGES, "Messages", Icons.Filled.Sms, Icons.Outlined.Sms),
         TopLevelDestination(Routes.QUARANTINE, "Blocked", Icons.Filled.Shield, Icons.Outlined.Shield),
         TopLevelDestination(Routes.RULES, "Rules", Icons.AutoMirrored.Filled.Rule, Icons.AutoMirrored.Outlined.Rule),
+        TopLevelDestination(Routes.AUTOMATIONS, "Automate", Icons.Filled.Bolt, Icons.Outlined.Bolt),
         TopLevelDestination(Routes.SETTINGS, "Settings", Icons.Filled.Settings, Icons.Outlined.Settings),
     )
     val showBottomBar = topLevel.any { dest ->
@@ -178,7 +218,16 @@ fun AppRoot(
                 ConversationsScreen(
                     viewModel = viewModel,
                     onOpenConversation = { address -> navController.navigate(Routes.conversation(address)) },
+                    onOpenSaved = { navController.navigate(Routes.SAVED) },
+                    onOpenContacts = { navController.navigate(Routes.CONTACTS) },
                     onNewMessage = { navController.navigate(Routes.compose("", "")) },
+                )
+            }
+            composable(Routes.SAVED) {
+                SavedMessagesScreen(
+                    viewModel = viewModel,
+                    onBack = { navController.popBackStack() },
+                    onForward = { newBody -> navController.navigate(Routes.compose("", newBody)) },
                 )
             }
             composable(Routes.QUARANTINE) {
@@ -199,6 +248,53 @@ fun AppRoot(
             composable(Routes.SETTINGS) {
                 SettingsScreen(viewModel = viewModel)
             }
+            composable(Routes.AUTOMATIONS) {
+                AutomationsScreen(
+                    viewModel = viewModel,
+                    onOpenAutoReplies = { navController.navigate(Routes.AUTO_REPLIES) },
+                    onOpenWorkflows = { navController.navigate(Routes.WORKFLOWS) },
+                )
+            }
+            composable(Routes.AUTO_REPLIES) {
+                AutoRepliesScreen(
+                    viewModel = viewModel,
+                    onBack = { navController.popBackStack() },
+                    onEditReply = { id -> navController.navigate(Routes.autoReplyEditor(id)) },
+                )
+            }
+            composable(
+                route = "${Routes.AUTO_REPLY_EDITOR}/{${Routes.AUTO_REPLY_EDITOR_ARG}}",
+                arguments = listOf(navArgument(Routes.AUTO_REPLY_EDITOR_ARG) { type = NavType.StringType }),
+            ) { entry ->
+                AutoReplyEditorScreen(
+                    viewModel = viewModel,
+                    replyId = entry.arguments?.getString(Routes.AUTO_REPLY_EDITOR_ARG)?.takeIf { it != "new" },
+                    onDone = { navController.popBackStack() },
+                )
+            }
+            composable(Routes.WORKFLOWS) {
+                WorkflowsScreen(
+                    viewModel = viewModel,
+                    onBack = { navController.popBackStack() },
+                    onEditWorkflow = { id -> navController.navigate(Routes.workflowEditor(id)) },
+                )
+            }
+            composable(
+                route = "${Routes.WORKFLOW_EDITOR}/{${Routes.WORKFLOW_EDITOR_ARG}}",
+                arguments = listOf(navArgument(Routes.WORKFLOW_EDITOR_ARG) { type = NavType.StringType }),
+            ) { entry ->
+                WorkflowEditorScreen(
+                    viewModel = viewModel,
+                    workflowId = entry.arguments?.getString(Routes.WORKFLOW_EDITOR_ARG)?.takeIf { it != "new" },
+                    onDone = { navController.popBackStack() },
+                )
+            }
+            composable(Routes.CONTACTS) {
+                ContactsScreen(
+                    viewModel = viewModel,
+                    onBack = { navController.popBackStack() },
+                )
+            }
             composable(
                 route = "${Routes.COMPOSE}?${Routes.COMPOSE_RECIPIENT_ARG}={${Routes.COMPOSE_RECIPIENT_ARG}}" +
                     "&${Routes.COMPOSE_BODY_ARG}={${Routes.COMPOSE_BODY_ARG}}",
@@ -217,12 +313,11 @@ fun AppRoot(
                     ?.let { Uri.decode(it) }.orEmpty()
                 val body = entry.arguments?.getString(Routes.COMPOSE_BODY_ARG)
                     ?.let { Uri.decode(it) }.orEmpty()
-                ConversationScreen(
+                ComposeScreen(
                     viewModel = viewModel,
-                    address = recipient.takeIf { it.isNotBlank() },
+                    initialRecipient = recipient,
                     initialBody = body,
-                    onBack = { navController.popBackStack() },
-                    onForward = { newBody -> navController.navigate(Routes.compose("", newBody)) },
+                    onDone = { navController.popBackStack() },
                 )
             }
             composable(
