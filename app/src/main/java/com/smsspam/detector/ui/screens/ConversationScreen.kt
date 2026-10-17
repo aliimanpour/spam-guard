@@ -7,6 +7,7 @@ import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -107,6 +108,7 @@ import com.smsspam.detector.ui.OlderState
 import com.smsspam.detector.ui.components.ContactAvatar
 import com.smsspam.detector.ui.components.EmptyState
 import com.smsspam.detector.ui.components.HighlightedText
+import com.smsspam.detector.ui.components.MessageText
 import com.smsspam.detector.ui.components.SetDefaultSmsDialog
 import com.smsspam.detector.ui.components.defaultSmsRoleIntent
 import com.smsspam.detector.ui.components.formatDateTime
@@ -252,6 +254,22 @@ fun ConversationScreen(
     val copyText: (String) -> Unit = { text ->
         val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
         clipboard.setPrimaryClip(ClipData.newPlainText("Message", text))
+    }
+
+    // Used when the user taps a card / SHEBA number inside a message.
+    val copyAccount: (String) -> Unit = { digits ->
+        copyText(digits)
+        Toast.makeText(context, "Copied $digits", Toast.LENGTH_SHORT).show()
+    }
+
+    // Used when the user taps a phone number inside a message: opens the dialer
+    // pre-filled, the same action as the conversation header's "Call".
+    val dialNumber: (String) -> Unit = { number ->
+        try {
+            context.startActivity(Intent(Intent.ACTION_DIAL, Uri.parse("tel:$number")))
+        } catch (_: Exception) {
+            // No app to handle the dial intent.
+        }
     }
 
     Scaffold(
@@ -475,6 +493,8 @@ fun ConversationScreen(
                                     onToggleSelect = { selectedIds = toggleSelection(selectedIds, item.message.id) },
                                     onStartSelect = { selectedIds = selectedIds + item.message.id },
                                     onCopy = { copyText(item.message.body) },
+                                    onCopyAccount = copyAccount,
+                                    onCallNumber = dialNumber,
                                     onForward = { onForward(item.message.body) },
                                     onShare = { shareText(context, item.message.body) },
                                     onRetry = {
@@ -487,11 +507,17 @@ fun ConversationScreen(
                                 )
                                 is ChatItem.Scheduled -> ScheduledBubble(
                                     message = item.message,
+                                    onCopyAccount = copyAccount,
+                                    onCallNumber = dialNumber,
                                     onCancel = { viewModel.cancelScheduled(item.message.id) },
                                     onRetry = { viewModel.sendScheduledNow(item.message.id) },
                                     onDelete = { viewModel.deleteScheduled(item.message.id) },
                                 )
-                                is ChatItem.Quarantined -> QuarantinedBubble(item.message)
+                                is ChatItem.Quarantined -> QuarantinedBubble(
+                                    message = item.message,
+                                    onCopyAccount = copyAccount,
+                                    onCallNumber = dialNumber,
+                                )
                             }
                         }
                     }
@@ -874,6 +900,8 @@ private fun MessageBubble(
     onToggleSelect: () -> Unit,
     onStartSelect: () -> Unit,
     onCopy: () -> Unit,
+    onCopyAccount: (String) -> Unit,
+    onCallNumber: (String) -> Unit,
     onForward: () -> Unit,
     onShare: () -> Unit,
     onRetry: () -> Unit,
@@ -940,7 +968,7 @@ private fun MessageBubble(
                         modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
                         verticalArrangement = Arrangement.spacedBy(2.dp),
                     ) {
-                        Text(
+                        MessageText(
                             text = message.body,
                             style = MaterialTheme.typography.bodyMedium,
                             color = when {
@@ -948,6 +976,13 @@ private fun MessageBubble(
                                 incoming -> MaterialTheme.colorScheme.onSurface
                                 else -> MaterialTheme.colorScheme.onPrimaryContainer
                             },
+                            linkColor = if (incoming) {
+                                MaterialTheme.colorScheme.primary
+                            } else {
+                                MaterialTheme.colorScheme.onPrimaryContainer
+                            },
+                            onCopyAccount = onCopyAccount,
+                            onCallNumber = onCallNumber,
                         )
                         Row(
                             modifier = Modifier.align(Alignment.End),
@@ -1017,6 +1052,8 @@ private fun MessageBubble(
 @Composable
 private fun ScheduledBubble(
     message: ScheduledMessage,
+    onCopyAccount: (String) -> Unit,
+    onCallNumber: (String) -> Unit,
     onCancel: () -> Unit,
     onRetry: () -> Unit,
     onDelete: () -> Unit,
@@ -1059,9 +1096,12 @@ private fun ScheduledBubble(
                             fontWeight = FontWeight.SemiBold,
                         )
                     }
-                    Text(
+                    MessageText(
                         text = message.body,
                         style = MaterialTheme.typography.bodyMedium,
+                        linkColor = MaterialTheme.colorScheme.onTertiaryContainer,
+                        onCopyAccount = onCopyAccount,
+                        onCallNumber = onCallNumber,
                     )
                     Text(
                         text = if (pending) {
@@ -1092,7 +1132,11 @@ private fun ScheduledBubble(
  * the rule that caught it; act on it from the Blocked tab.
  */
 @Composable
-private fun QuarantinedBubble(message: QuarantineMessage) {
+private fun QuarantinedBubble(
+    message: QuarantineMessage,
+    onCopyAccount: (String) -> Unit,
+    onCallNumber: (String) -> Unit,
+) {
     BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
         val maxBubbleWidth = maxWidth * 0.82f
         Row(
@@ -1130,9 +1174,12 @@ private fun QuarantinedBubble(message: QuarantineMessage) {
                             fontWeight = FontWeight.SemiBold,
                         )
                     }
-                    Text(
+                    MessageText(
                         text = message.body,
                         style = MaterialTheme.typography.bodyMedium,
+                        linkColor = MaterialTheme.colorScheme.onErrorContainer,
+                        onCopyAccount = onCopyAccount,
+                        onCallNumber = onCallNumber,
                     )
                     Text(
                         text = formatTime(message.timestamp),

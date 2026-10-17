@@ -3,11 +3,13 @@ package com.smsspam.detector.notify
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
+import android.net.Uri
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import com.smsspam.detector.MainActivity
 import com.smsspam.detector.R
 import com.smsspam.detector.SpamGuardApp
+import com.smsspam.detector.text.MessageContent
 
 object Notifier {
 
@@ -24,7 +26,7 @@ object Notifier {
         )
 
         val preview = body.replace('\n', ' ').take(110)
-        val notification = NotificationCompat.Builder(context, SpamGuardApp.MESSAGE_CHANNEL_ID)
+        val builder = NotificationCompat.Builder(context, SpamGuardApp.MESSAGE_CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_notification)
             .setContentTitle(sender.ifBlank { "Unknown" })
             .setContentText(preview)
@@ -32,7 +34,40 @@ object Notifier {
             .setPriority(NotificationCompat.PRIORITY_DEFAULT)
             .setAutoCancel(true)
             .setContentIntent(pending)
-            .build()
+
+        // Surface the parts of the message worth acting on right from the shade:
+        // the OTP and account numbers become copy buttons, links become an
+        // "open" button. Request codes are derived from the sender's hash so the
+        // same sender updates its own actions instead of leaking new intents.
+        val base = sender.hashCode()
+        MessageContent.otpCode(body)?.let { code ->
+            builder.addAction(
+                0,
+                "Copy code",
+                NotificationActionReceiver.copyPendingIntent(context, code, "code", base + 1),
+            )
+        }
+        MessageContent.firstUrl(body)?.let { url ->
+            val view = Intent(Intent.ACTION_VIEW, Uri.parse(url))
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            val open = PendingIntent.getActivity(
+                context,
+                base + 2,
+                view,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+            )
+            builder.addAction(0, "Open link", open)
+        }
+        MessageContent.firstAccount(body)?.let { account ->
+            val label = if (account.kind == MessageContent.Kind.SHEBA) "SHEBA number" else "card number"
+            builder.addAction(
+                0,
+                "Copy number",
+                NotificationActionReceiver.copyPendingIntent(context, account.value, label, base + 3),
+            )
+        }
+
+        val notification = builder.build()
 
         try {
             NotificationManagerCompat.from(context).notify(sender.hashCode(), notification)
