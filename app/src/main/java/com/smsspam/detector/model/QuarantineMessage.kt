@@ -32,6 +32,10 @@ data class QuarantineMessage(
     /** Stable key used to avoid importing the same inbox message twice. */
     val dedupeKey: String get() = "$sender|$timestamp|$body"
 
+    /** True while the message still counts as blocked (not yet reviewed or restored). */
+    val isBlocked: Boolean
+        get() = status == QuarantineStatus.SPAM || status == QuarantineStatus.CONFIRMED_SPAM
+
     fun toJson(): JSONObject = JSONObject().apply {
         put("id", id)
         put("sender", sender)

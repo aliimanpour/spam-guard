@@ -19,12 +19,17 @@ object SmsSender {
             .map { it.trim() }
             .filter { it.isNotEmpty() }
 
-    fun send(context: Context, rawRecipients: String, body: String): Boolean =
-        send(context, parseRecipients(rawRecipients), body)
+    fun send(context: Context, rawRecipients: String, body: String, subId: Int = 0): Boolean =
+        send(context, parseRecipients(rawRecipients), body, subId)
 
-    fun send(context: Context, recipients: List<String>, body: String): Boolean {
+    /**
+     * Sends with the SIM chosen by [subId]; 0 means the system default SIM.
+     * A subscription that is no longer active (SIM swapped out) falls back to
+     * the default so the message still goes out.
+     */
+    fun send(context: Context, recipients: List<String>, body: String, subId: Int = 0): Boolean {
         if (recipients.isEmpty() || body.isBlank()) return false
-        val manager = manager(context) ?: return false
+        val manager = manager(context, subId) ?: return false
         return recipients.all { recipient ->
             try {
                 val parts = manager.divideMessage(body)
@@ -61,14 +66,23 @@ object SmsSender {
         }
     }
 
-    @Suppress("DEPRECATION")
-    private fun manager(context: Context): SmsManager? = try {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+    /** The SMS manager for [subId], or the system default when [subId] is 0. */
+    private fun manager(context: Context, subId: Int): SmsManager? = try {
+        if (subId > 0 && subscriptionActive(context, subId)) {
+            SmsManager.getSmsManagerForSubscriptionId(subId)
+        } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             context.getSystemService(SmsManager::class.java)
         } else {
-            SmsManager.getDefault()
+            @Suppress("DEPRECATION") SmsManager.getDefault()
         }
     } catch (_: Exception) {
         null
+    }
+
+    /** True when [subId] is a currently active SIM; false without READ_PHONE_STATE. */
+    private fun subscriptionActive(context: Context, subId: Int): Boolean = try {
+        SmsSims.active(context).any { it.subId == subId }
+    } catch (_: Exception) {
+        false
     }
 }

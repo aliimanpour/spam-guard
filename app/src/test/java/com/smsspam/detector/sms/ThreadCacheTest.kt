@@ -90,4 +90,16 @@ class ThreadCacheTest {
         assertNull(cache.get("a"))
         assertNull(cache.get("b"))
     }
+
+    @Test
+    fun `contains checks without bumping recency`() {
+        val cache = cache("a", "b", maxThreads = 2)
+        assertTrue(cache.contains("a"))
+        // "a" was only checked, not read, so it is still the least recently
+        // used and the next insert evicts it — not "b".
+        cache.put("c", listOf(message(3)), hasMore = false)
+        assertNull(cache.get("a"))
+        assertNotNull(cache.get("b"))
+        assertNotNull(cache.get("c"))
+    }
 }

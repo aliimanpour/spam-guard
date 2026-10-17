@@ -52,6 +52,7 @@ import com.smsspam.detector.engine.RuleEngine.matches
 import com.smsspam.detector.model.Condition
 import com.smsspam.detector.model.MatchType
 import com.smsspam.detector.model.Rule
+import com.smsspam.detector.model.RuleAction
 import com.smsspam.detector.model.RuleLogic
 import com.smsspam.detector.model.SmsField
 import com.smsspam.detector.ui.AppViewModel
@@ -66,6 +67,7 @@ fun RuleEditorScreen(
 
     var name by remember(ruleId) { mutableStateOf(existing?.name.orEmpty()) }
     var enabled by remember(ruleId) { mutableStateOf(existing?.enabled ?: true) }
+    var action by remember(ruleId) { mutableStateOf(existing?.action ?: RuleAction.BLOCK) }
     var logic by remember(ruleId) { mutableStateOf(existing?.logic ?: RuleLogic.ANY) }
     val conditions = remember(ruleId) {
         (existing?.conditions ?: listOf(Condition())).toMutableStateList()
@@ -96,6 +98,7 @@ fun RuleEditorScreen(
                                 id = existing?.id ?: java.util.UUID.randomUUID().toString(),
                                 name = name.trim(),
                                 enabled = enabled,
+                                action = action,
                                 logic = logic,
                                 conditions = conditions.toList(),
                                 builtin = existing?.builtin ?: false,
@@ -145,6 +148,30 @@ fun RuleEditorScreen(
             }
 
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("When it matches", style = MaterialTheme.typography.titleSmall)
+                SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
+                    RuleAction.entries.forEachIndexed { index, option ->
+                        SegmentedButton(
+                            selected = action == option,
+                            onClick = { action = option },
+                            shape = SegmentedButtonDefaults.itemShape(index, RuleAction.entries.size),
+                        ) {
+                            Text(option.label)
+                        }
+                    }
+                }
+                Text(
+                    if (action == RuleAction.ALLOW) {
+                        "Allow: matching messages are never blocked — for verification codes and other must-deliver SMS."
+                    } else {
+                        "Block: matching messages are treated as spam and moved to quarantine."
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text("Combine conditions with", style = MaterialTheme.typography.titleSmall)
                 SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
                     RuleLogic.entries.forEachIndexed { index, option ->
@@ -190,7 +217,7 @@ fun RuleEditorScreen(
             RuleTester(
                 text = testerText,
                 onTextChange = { testerText = it },
-                rule = Rule(name = name, logic = logic, conditions = conditions.toList()),
+                rule = Rule(name = name, action = action, logic = logic, conditions = conditions.toList()),
             )
         }
     }
@@ -312,10 +339,11 @@ private fun RuleTester(
     Card(
         modifier = Modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(
-            containerColor = when (matched) {
-                true -> MaterialTheme.colorScheme.errorContainer
-                false -> MaterialTheme.colorScheme.secondaryContainer
-                null -> MaterialTheme.colorScheme.surfaceContainerHighest
+            containerColor = when {
+                matched == null -> MaterialTheme.colorScheme.surfaceContainerHighest
+                matched == true && rule.action == RuleAction.ALLOW -> MaterialTheme.colorScheme.primaryContainer
+                matched == true -> MaterialTheme.colorScheme.errorContainer
+                else -> MaterialTheme.colorScheme.secondaryContainer
             },
         ),
     ) {
@@ -327,20 +355,25 @@ private fun RuleTester(
                 label = { Text("Sample message") },
                 modifier = Modifier.fillMaxWidth(),
             )
-            when (matched) {
-                true -> Text(
+            when {
+                matched == null -> Text(
+                    "Type a sample to test the conditions above.",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+                matched == true && rule.action == RuleAction.ALLOW -> Text(
+                    "This message would be allowed through (never blocked).",
+                    color = MaterialTheme.colorScheme.onPrimaryContainer,
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+                matched == true -> Text(
                     "This message would be flagged as spam.",
                     color = MaterialTheme.colorScheme.onErrorContainer,
                     style = MaterialTheme.typography.bodyMedium,
                 )
-                false -> Text(
-                    "This message would not be flagged.",
+                else -> Text(
+                    "This message would not be matched.",
                     color = MaterialTheme.colorScheme.onSecondaryContainer,
-                    style = MaterialTheme.typography.bodyMedium,
-                )
-                null -> Text(
-                    "Type a sample to test the conditions above.",
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                     style = MaterialTheme.typography.bodyMedium,
                 )
             }

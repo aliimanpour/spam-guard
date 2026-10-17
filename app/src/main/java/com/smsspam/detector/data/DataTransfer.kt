@@ -59,7 +59,7 @@ object DataTransfer {
         val messages = root.optJSONArray("messages")?.toObjects()?.map { QuarantineMessage.fromJson(it) }.orEmpty()
         val scheduled = root.optJSONArray("scheduled")?.toObjects()?.map { ScheduledMessage.fromJson(it) }.orEmpty()
 
-        if (rules.isNotEmpty()) container.ruleRepository.save(rules)
+        if (rules.isNotEmpty()) container.ruleRepository.importRules(rules)
         val messagesBefore = container.messageRepository.messages.value.size
         val messagesAfter = container.messageRepository.addAll(messages).size
         var addedScheduled = 0

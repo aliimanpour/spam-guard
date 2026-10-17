@@ -3,15 +3,25 @@ package com.smsspam.detector.engine
 import com.smsspam.detector.model.Condition
 import com.smsspam.detector.model.MatchType
 import com.smsspam.detector.model.Rule
+import com.smsspam.detector.model.RuleAction
 import com.smsspam.detector.model.RuleLogic
 import com.smsspam.detector.model.SmsField
 
 /** Evaluates incoming SMS against the user's rules. */
 object RuleEngine {
 
-    /** Returns the first enabled rule that matches, or null when the message looks safe. */
-    fun firstMatch(sender: String, body: String, rules: List<Rule>): Rule? =
-        rules.firstOrNull { it.enabled && it.matches(sender, body) }
+    /**
+     * Returns the first enabled block-rule that matches, or null when the
+     * message looks safe. Enabled allow-rules are evaluated first: when one
+     * matches — the built-in verification-code preset, for example — the
+     * message is treated as safe even though a block-rule would match.
+     */
+    fun firstMatch(sender: String, body: String, rules: List<Rule>): Rule? {
+        val enabled = rules.filter { it.enabled }
+        val allowed = enabled.any { it.action == RuleAction.ALLOW && it.matches(sender, body) }
+        if (allowed) return null
+        return enabled.firstOrNull { it.action == RuleAction.BLOCK && it.matches(sender, body) }
+    }
 
     fun Rule.matches(sender: String, body: String): Boolean {
         if (conditions.isEmpty()) return false

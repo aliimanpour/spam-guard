@@ -11,6 +11,15 @@ enum class SmsField(val label: String) {
     ANY("Sender + body"),
 }
 
+/** What happens when a rule matches. */
+enum class RuleAction(val label: String) {
+    /** Matching messages are treated as spam and moved to quarantine. */
+    BLOCK("Block"),
+
+    /** Matching messages are treated as safe and are never blocked (e.g. verification codes). */
+    ALLOW("Allow"),
+}
+
 /** How a condition compares its pattern with the target text. */
 enum class MatchType(val label: String) {
     CONTAINS("contains"),
@@ -60,22 +69,27 @@ enum class RuleLogic(val label: String, val symbol: String) {
     ALL("Match ALL conditions", "AND"),
 }
 
-/** A spam detection rule: a name plus one or more conditions. */
+/** A detection rule: a name plus one or more conditions, with a block or allow action. */
 data class Rule(
     val id: String = UUID.randomUUID().toString(),
     val name: String = "",
     val enabled: Boolean = true,
+    val action: RuleAction = RuleAction.BLOCK,
     val logic: RuleLogic = RuleLogic.ANY,
     val conditions: List<Condition> = emptyList(),
     val builtin: Boolean = false,
 ) {
     val summary: String
-        get() = "${conditions.size} condition${if (conditions.size == 1) "" else "s"} · ${logic.symbol}"
+        get() = buildString {
+            append("${conditions.size} condition${if (conditions.size == 1) "" else "s"} · ${logic.symbol}")
+            if (action == RuleAction.ALLOW) append(" · ${action.label}")
+        }
 
     fun toJson(): JSONObject = JSONObject().apply {
         put("id", id)
         put("name", name)
         put("enabled", enabled)
+        put("action", action.name)
         put("logic", logic.name)
         put("builtin", builtin)
         put("conditions", JSONArray().apply { conditions.forEach { put(it.toJson()) } })
@@ -86,6 +100,8 @@ data class Rule(
             id = o.optString("id").ifBlank { UUID.randomUUID().toString() },
             name = o.optString("name"),
             enabled = o.optBoolean("enabled", true),
+            action = enumValues<RuleAction>().firstOrNull { it.name == o.optString("action") }
+                ?: RuleAction.BLOCK,
             logic = enumValues<RuleLogic>().firstOrNull { it.name == o.optString("logic") } ?: RuleLogic.ANY,
             builtin = o.optBoolean("builtin", false),
             conditions = o.optJSONArray("conditions")?.let { arr ->

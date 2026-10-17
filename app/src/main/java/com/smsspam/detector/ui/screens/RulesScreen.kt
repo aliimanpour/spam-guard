@@ -45,6 +45,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.smsspam.detector.model.Rule
+import com.smsspam.detector.model.RuleAction
 import com.smsspam.detector.ui.AppViewModel
 import com.smsspam.detector.ui.components.EmptyState
 
@@ -96,7 +97,8 @@ fun RulesScreen(
         ) {
             item {
                 Text(
-                    "A message is treated as spam when it matches any enabled rule. " +
+                    "A message is treated as spam when it matches any enabled block rule, unless an " +
+                        "enabled allow rule (verification codes, for example) matches first. " +
                         "Inside a rule you can combine conditions with AND or OR.",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -176,6 +178,9 @@ private fun RuleCard(
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     if (rule.builtin) {
                         AssistChip(onClick = { }, label = { Text("Preset") })
+                    }
+                    if (rule.action == RuleAction.ALLOW) {
+                        AssistChip(onClick = { }, label = { Text("Allow") })
                     }
                     AssistChip(onClick = { }, label = { Text(rule.logic.symbol) })
                 }

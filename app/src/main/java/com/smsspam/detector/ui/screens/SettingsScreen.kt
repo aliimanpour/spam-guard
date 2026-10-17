@@ -27,6 +27,10 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SegmentedButton
+import androidx.compose.material3.SegmentedButtonDefaults
+import androidx.compose.material3.SingleChoiceSegmentedButtonRow
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
@@ -36,12 +40,14 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.smsspam.detector.BuildConfig
+import com.smsspam.detector.data.SettingsStore
 import com.smsspam.detector.ui.AppViewModel
 import com.smsspam.detector.ui.components.AppPermission
 import com.smsspam.detector.ui.components.InfoCard
@@ -52,11 +58,14 @@ import com.smsspam.detector.ui.components.rememberPermissionStatus
 fun SettingsScreen(viewModel: AppViewModel) {
     val context = LocalContext.current
     val permissionStatus = rememberPermissionStatus()
+    val autoUnsubscribe by viewModel.autoUnsubscribe.collectAsStateWithLifecycle()
+    val unsubscribeCode by viewModel.unsubscribeCode.collectAsStateWithLifecycle()
 
     val permissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
     ) {
         permissionStatus.value = AppPermission.needed.associateWith { context.hasPermission(it.permission) }
+        viewModel.refreshSims(force = true)
     }
 
     var isDefaultSms by remember {
@@ -160,6 +169,57 @@ fun SettingsScreen(viewModel: AppViewModel) {
                         TextButton(onClick = { openDefaultAppsSettings(context) }) {
                             Text("Open system default apps")
                         }
+                    }
+                }
+            }
+
+            SectionTitle("Auto unsubscribe")
+            Card(modifier = Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                "Unsubscribe for me",
+                                style = MaterialTheme.typography.titleSmall,
+                                fontWeight = FontWeight.SemiBold,
+                            )
+                            Text(
+                                "When a blocked ad asks for an unsubscribe code (لغو11), send that " +
+                                    "code back to its sender — once per sender.",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        Switch(
+                            checked = autoUnsubscribe,
+                            onCheckedChange = { viewModel.setAutoUnsubscribe(it) },
+                        )
+                    }
+                    if (autoUnsubscribe) {
+                        Text("Code to send", style = MaterialTheme.typography.titleSmall)
+                        SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
+                            SettingsStore.CODE_CHOICES.forEachIndexed { index, code ->
+                                SegmentedButton(
+                                    selected = unsubscribeCode == code,
+                                    onClick = { viewModel.setUnsubscribeCode(code) },
+                                    shape = SegmentedButtonDefaults.itemShape(index, SettingsStore.CODE_CHOICES.size),
+                                ) {
+                                    Text(if (code == SettingsStore.CODE_AUTO) "Auto" else code)
+                                }
+                            }
+                        }
+                        Text(
+                            if (unsubscribeCode == SettingsStore.CODE_AUTO) {
+                                "Auto: replies with the code the ad itself mentions (لغو12 → 12), otherwise 11."
+                            } else {
+                                "Always replies with $unsubscribeCode, whatever the ad mentions."
+                            },
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
                     }
                 }
             }

@@ -23,6 +23,8 @@ data class ScheduledMessage(
     val sendAt: Long = System.currentTimeMillis(),
     val createdAt: Long = System.currentTimeMillis(),
     val status: ScheduledStatus = ScheduledStatus.PENDING,
+    /** Subscription id of the SIM to send with; 0 = system default SIM. */
+    val subId: Int = 0,
 ) {
     /** Stable request code used for the PendingIntent / alarm slot. */
     val requestCode: Int get() = id.hashCode()
@@ -34,6 +36,7 @@ data class ScheduledMessage(
         put("sendAt", sendAt)
         put("createdAt", createdAt)
         put("status", status.name)
+        put("subId", subId)
     }
 
     companion object {
@@ -45,6 +48,7 @@ data class ScheduledMessage(
             createdAt = o.optLong("createdAt", System.currentTimeMillis()),
             status = enumValues<ScheduledStatus>().firstOrNull { it.name == o.optString("status") }
                 ?: ScheduledStatus.PENDING,
+            subId = o.optInt("subId", 0),
         )
     }
 }

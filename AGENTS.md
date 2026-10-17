@@ -43,11 +43,13 @@ app/src/main/java/com/smsspam/detector/
 ├── MainActivity.kt            entry point, edge-to-edge Compose host
 ├── SpamGuardApp.kt            Application + notification channels + AppContainer (manual DI)
 ├── model/                     Rule, Condition, QuarantineMessage (+ org.json serialization)
-├── engine/RuleEngine.kt       pure matching + AND/OR evaluation
+├── engine/RuleEngine.kt       pure matching; allow-rules are checked before block-rules
 ├── data/                      repositories backed by JsonListStore, exposed as StateFlow
+│                              (+ small prefs stores: UnreadStore badge stamp, SettingsStore
+│                              auto-unsubscribe, SimStore per-conversation SIM, UnsubscribeLog)
 ├── sms/                       SmsReceiver, MmsReceiver, quick-reply service, compose
 │                              activity, inbox read/delete/restore
-├── notify/                    Notifier (spam + new-message notifications)
+├── notify/                    Notifier (new-message + scheduled-send notifications)
 └── ui/                        AppRoot nav host, AppViewModel, screens, components, theme
 ```
 
@@ -67,14 +69,19 @@ the background.
   (`SmsThreads.readConversations`); a thread's messages load one
   `SmsThreads.PAGE_SIZE` window at a time (`SmsThreads.readThreadPage`, keyed
   by indexed `thread_id`), and the newest page of recently opened threads lives
-  in the bounded LRU `ThreadCache`. `AppViewModel` also watches the provider
-  with a debounced `ContentObserver` and serves resume refreshes from the cache
-  within a freshness window. Do not reintroduce full-inbox scans or
+  in the bounded LRU `ThreadCache`. Rows of the conversation list also
+  prefetch their newest page into that same `ThreadCache` while the user
+  scrolls (`AppViewModel.prefetchConversation`, one worker, most-recent-first),
+  so opening a conversation paints instantly. `AppViewModel` also watches the
+  provider with a debounced `ContentObserver` and serves resume refreshes from
+  the cache within a freshness window. Do not reintroduce full-inbox scans or
   `address`-based queries (no index → full table scan) for these screens.
 - **Persistence = `JsonListStore`.** Rules and messages are stored as JSON arrays
   in `SharedPreferences`, not Room/SQLite. New persisted models implement
   `toJson()` / `fromJson()` with `org.json`, tolerate missing keys
   (`optString`/`optBoolean` with defaults), and generate a `UUID` id when absent.
+  Single-value state (badge stamp, auto-unsubscribe toggle, per-conversation SIM)
+  lives in tiny prefs-backed stores under `data/`.
 - **Repositories** wrap a `JsonListStore`, hold a `MutableStateFlow`, and expose an
   `asStateFlow()`. Mutating methods are `@Synchronized` and write through to disk.
   Keep the StateFlow as the single source of truth.
@@ -87,6 +94,25 @@ the background.
 
 ## Domain rules to respect
 
+- **Blocked messages are silent.** Never post a notification for quarantined
+  SMS; the Blocked tab icon carries the unread badge instead
+  (`AppViewModel.newBlockedCount`, reset when the user exits the app via
+  `MainActivity.onStop` → `markBlockedSeen`, and when the Blocked tab opens).
+- **Verification-code (OTP) messages are never blocked.** This lives in the
+  `preset-verification` **allow rule** (`RuleAction.ALLOW`), not as a hardcoded
+  engine override — users can see, edit or disable it in the rules UI.
+  `RuleEngine.firstMatch` evaluates allow-rules before block-rules. When adding
+  new presets, bump `RuleRepository.PRESET_VERSION` so stored lists pick them
+  up on upgrade; keep the patterns conservative — a blocked OTP is worse than
+  rare spam slipping through.
+- **Auto unsubscribe sends SMS.** When the user enables it (Settings → Auto
+  unsubscribe), a *blocked* message that carries a لغو hint gets the
+  unsubscribe code ("11"/"12" or the code the ad itself mentions) replied via
+  `AutoUnsubscriber`, at most once per sender (`UnsubscribeLog`). Never send
+  for messages without a لغو hint; never fire from inbox scans.
+- **SIM-aware sends.** Outgoing SMS go through `SmsSender.send(..., subId)`;
+  an inactive/unknown subId falls back to the default SIM. The per-conversation
+  choice is remembered in `SimStore`; scheduled messages persist their subId.
 - **Default-SMS-app role matters.** Since Android 4.4 only the default SMS app may
   write to / delete from the system SMS provider. `SmsReceiver` handles both
   `SMS_DELIVER` (authoritative when we hold the role) and `SMS_RECEIVED`

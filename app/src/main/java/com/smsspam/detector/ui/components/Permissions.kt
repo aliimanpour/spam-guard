@@ -37,10 +37,15 @@ enum class AppPermission(val permission: String, val title: String, val rational
         "Call history",
         "Suggests people from your recent calls when you start a new message.",
     ),
+    READ_PHONE_STATE(
+        Manifest.permission.READ_PHONE_STATE,
+        "Phone / SIM",
+        "Lets you pick SIM 1 or SIM 2 when sending messages.",
+    ),
     POST_NOTIFICATIONS(
         "android.permission.POST_NOTIFICATIONS",
         "Notifications",
-        "Shows an alert whenever a message is blocked.",
+        "Alerts you about new messages and scheduled-send results.",
     );
 
     companion object {
@@ -51,6 +56,7 @@ enum class AppPermission(val permission: String, val title: String, val rational
                 add(SEND_SMS)
                 add(READ_CONTACTS)
                 add(READ_CALL_LOG)
+                add(READ_PHONE_STATE)
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) add(POST_NOTIFICATIONS)
             }
     }

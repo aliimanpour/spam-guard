@@ -41,6 +41,8 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -49,8 +51,10 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.smsspam.detector.model.QuarantineMessage
@@ -60,6 +64,7 @@ import com.smsspam.detector.ui.ScanState
 import com.smsspam.detector.ui.components.AppPermission
 import com.smsspam.detector.ui.components.EmptyState
 import com.smsspam.detector.ui.components.hasPermission
+import com.smsspam.detector.ui.components.isRtl
 import com.smsspam.detector.ui.components.relativeTime
 import com.smsspam.detector.ui.components.rememberPermissionStatus
 
@@ -86,6 +91,7 @@ fun QuarantineScreen(
         ActivityResultContracts.RequestMultiplePermissions()
     ) {
         permissionStatus.value = AppPermission.needed.associateWith { context.hasPermission(it.permission) }
+        viewModel.refreshSims(force = true)
     }
 
     LaunchedEffect(scanState) {
@@ -98,12 +104,16 @@ fun QuarantineScreen(
         }
     }
 
-    val blocked = messages.filter {
-        it.status == QuarantineStatus.SPAM || it.status == QuarantineStatus.CONFIRMED_SPAM
+    // Opening the tab is "seeing" the blocked messages: the badge clears now,
+    // and again on the way out so anything that arrived while it was open does
+    // not linger (the app exit resets it as well).
+    DisposableEffect(Unit) {
+        viewModel.markBlockedSeen()
+        onDispose { viewModel.markBlockedSeen() }
     }
-    val reviewed = messages.filter {
-        it.status == QuarantineStatus.NOT_SPAM || it.status == QuarantineStatus.RESTORED
-    }
+
+    val blocked = messages.filter { it.isBlocked }
+    val reviewed = messages.filterNot { it.isBlocked }
     val visible = when (filter) {
         MessageFilter.BLOCKED -> blocked
         MessageFilter.REVIEWED -> reviewed
@@ -277,12 +287,19 @@ private fun MessageCard(
                 )
             }
 
-            Text(
-                text = message.body,
-                style = MaterialTheme.typography.bodyMedium,
-                maxLines = if (expanded) Int.MAX_VALUE else 3,
-                overflow = TextOverflow.Ellipsis,
-            )
+            // Lay the body out in the text's own direction so Persian/Arabic
+            // messages read right-to-left and align to the right edge,
+            // mirroring the conversation bubbles.
+            val bodyDirection =
+                if (isRtl(message.body)) LayoutDirection.Rtl else LayoutDirection.Ltr
+            CompositionLocalProvider(LocalLayoutDirection provides bodyDirection) {
+                Text(
+                    text = message.body,
+                    style = MaterialTheme.typography.bodyMedium,
+                    maxLines = if (expanded) Int.MAX_VALUE else 3,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
 
             Row(
                 modifier = Modifier.fillMaxWidth(),

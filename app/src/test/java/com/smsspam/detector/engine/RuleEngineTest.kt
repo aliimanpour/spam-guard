@@ -5,6 +5,7 @@ import com.smsspam.detector.engine.RuleEngine.matches
 import com.smsspam.detector.model.Condition
 import com.smsspam.detector.model.MatchType
 import com.smsspam.detector.model.Rule
+import com.smsspam.detector.model.RuleAction
 import com.smsspam.detector.model.RuleLogic
 import com.smsspam.detector.model.SmsField
 import org.junit.Assert.assertEquals
@@ -93,5 +94,65 @@ class RuleEngineTest {
     fun `disabled rules are ignored`() {
         val rules = RuleRepository.defaultRules().map { it.copy(enabled = false) }
         assertNull(RuleEngine.firstMatch("", "لغو11", rules))
+    }
+
+    // --- Verification-code (OTP) preset: an allow rule ----------------------
+
+    @Test
+    fun `verification preset lets OTP through even with لغو11`() {
+        val rules = RuleRepository.defaultRules()
+        assertNull(RuleEngine.firstMatch("+989120000000", "بانک ملت\nکد تایید شما: 123456\nلغو11", rules))
+        assertNull(RuleEngine.firstMatch("sender", "Your verification code is 482913 لغو11", rules))
+    }
+
+    @Test
+    fun `verification preset recognizes persian digits ZWNJ and code separators`() {
+        val rules = RuleRepository.defaultRules()
+        assertNull(RuleEngine.firstMatch("", "کد فعال‌سازی شما ۱۲۳۴۵۶ لغو11", rules))
+        assertNull(RuleEngine.firstMatch("", "Telegram code: 12345", rules))
+        assertNull(RuleEngine.firstMatch("", "رمز ورود: ۸۱۳۴", rules))
+        assertNull(RuleEngine.firstMatch("", "otp: 1234", rules))
+    }
+
+    @Test
+    fun `ordinary texts are not verification messages`() {
+        val rules = RuleRepository.defaultRules()
+        assertNull(RuleEngine.firstMatch("", "سلام، حالت چطوره؟", rules))
+        assertFalse(
+            RuleRepository.defaultRules()
+                .first { it.action == RuleAction.ALLOW }
+                .matches("", "با کد تخفیف خرید کن"),
+        )
+    }
+
+    @Test
+    fun `disabling the verification preset re-blocks OTP-shaped spam`() {
+        val rules = RuleRepository.defaultRules().map {
+            if (it.id == "preset-verification") it.copy(enabled = false) else it
+        }
+        assertEquals("preset-optout", RuleEngine.firstMatch("", "کد تایید شما: 123456 لغو11", rules)?.id)
+    }
+
+    @Test
+    fun `allow rule beats a block rule regardless of order`() {
+        val rules = listOf(
+            Rule(name = "block-all", conditions = listOf(Condition(type = MatchType.CONTAINS, pattern = "a"))),
+            Rule(
+                name = "allow",
+                action = RuleAction.ALLOW,
+                conditions = listOf(Condition(type = MatchType.CONTAINS, pattern = "b")),
+            ),
+        )
+        assertNull(RuleEngine.firstMatch("", "ab", rules))
+        assertEquals("block-all", RuleEngine.firstMatch("", "a", rules)?.name)
+    }
+
+    @Test
+    fun `promo with a discount code is still blocked`() {
+        // "کد تخفیف" is not a verification phrase, so the OTP preset must not
+        // swallow real spam.
+        val rules = RuleRepository.defaultRules()
+        val match = RuleEngine.firstMatch("", "قرعه کشی! با کد تخفیف ثبت نام کن لغو11", rules)
+        assertEquals("preset-optout", match?.id)
     }
 }

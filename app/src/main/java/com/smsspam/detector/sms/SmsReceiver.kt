@@ -66,7 +66,7 @@ class SmsReceiver : BroadcastReceiver() {
                 // succeeds when we are the default SMS app (or hold WRITE_SMS).
                 val deleted = SmsInbox.deleteMatching(context, sender, body, timestamp)
                 Log.i(TAG, "blocked spam from=$sender rule='${match.name}' removedFromInbox=$deleted")
-                Notifier.notifySpam(context, message)
+                AutoUnsubscriber.maybeUnsubscribe(context, sender, body)
             } else if (isDeliver) {
                 // We are the default SMS app, so we must ensure normal messages are
                 // stored, otherwise the user would lose them.

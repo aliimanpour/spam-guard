@@ -25,11 +25,19 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Send
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Schedule
+import androidx.compose.material.icons.filled.SimCard
+import androidx.compose.material3.Badge
+import androidx.compose.material3.BadgedBox
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledIconButton
+import androidx.compose.material3.FilledTonalIconButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -58,6 +66,7 @@ import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.smsspam.detector.contacts.Recipient
 import com.smsspam.detector.contacts.RecipientDirectory
+import com.smsspam.detector.sms.SimSubscription
 import com.smsspam.detector.sms.SmsMessage
 import com.smsspam.detector.ui.AppViewModel
 import com.smsspam.detector.ui.OlderState
@@ -87,13 +96,18 @@ fun ConversationScreen(
     val context = LocalContext.current
     val messages by viewModel.conversation.collectAsStateWithLifecycle()
     val olderState by viewModel.olderState.collectAsStateWithLifecycle()
+    val threadLoading by viewModel.threadLoading.collectAsStateWithLifecycle()
     val contacts by viewModel.contacts.collectAsStateWithLifecycle()
     val recipients by viewModel.recipients.collectAsStateWithLifecycle()
     val isDefaultSms by viewModel.isDefaultSms.collectAsStateWithLifecycle()
+    val sims by viewModel.sims.collectAsStateWithLifecycle()
     val listState = rememberLazyListState()
     var recipient by remember(address) { mutableStateOf(address.orEmpty()) }
     var body by remember(initialBody) { mutableStateOf(initialBody) }
     var showDefaultDialog by remember { mutableStateOf(false) }
+    // User's SIM choice for this open; null keeps the remembered per-conversation SIM.
+    var simOverride by remember(address) { mutableStateOf<Int?>(null) }
+    val chosenSubId = simOverride ?: viewModel.selectedSubId(address.orEmpty())
     val isNew = address.isNullOrBlank()
 
     // Suggestions for the editable "To" field: contacts plus any number that has
@@ -114,11 +128,13 @@ fun ConversationScreen(
         viewModel.openConversation(address.orEmpty())
         viewModel.refreshContacts()
         viewModel.refreshRecipients()
+        viewModel.refreshSims()
     }
 
     LifecycleResumeEffect(Unit) {
         viewModel.refreshDefaultSms()
         viewModel.refreshRecipients()
+        viewModel.refreshSims()
         onPauseOrDispose { }
     }
 
@@ -183,13 +199,23 @@ fun ConversationScreen(
                             shape = RoundedCornerShape(24.dp),
                             modifier = Modifier.weight(1f),
                         )
+                        if (sims.size > 1) {
+                            SimPicker(
+                                sims = sims,
+                                selectedSubId = chosenSubId,
+                                onSelect = { sub ->
+                                    simOverride = sub
+                                    address?.let { viewModel.setSim(it, sub) }
+                                },
+                            )
+                        }
                         IconButton(
                             onClick = {
                                 if (!isDefaultSms) {
                                     showDefaultDialog = true
                                 } else {
                                     pickDateTime(context) { at ->
-                                        if (viewModel.scheduleMessage(recipient, body, at)) body = ""
+                                        if (viewModel.scheduleMessage(recipient, body, at, chosenSubId)) body = ""
                                     }
                                 }
                             },
@@ -202,7 +228,7 @@ fun ConversationScreen(
                                 if (!isDefaultSms) {
                                     showDefaultDialog = true
                                 } else {
-                                    viewModel.sendSms(recipient, body)
+                                    viewModel.sendSms(recipient, body, chosenSubId)
                                     body = ""
                                 }
                             },
@@ -254,14 +280,27 @@ fun ConversationScreen(
             }
 
             if (messages.isEmpty()) {
-                EmptyState(
-                    title = if (isNew) "New message" else "No messages yet",
-                    message = if (isNew) {
-                        "Type a contact name or number and a message, then send or schedule it."
-                    } else {
-                        "Messages you exchange with this number appear here."
-                    },
-                )
+                // A thread the cache has never seen shows progress instead of
+                // "No messages yet" so the first load never looks empty.
+                if (!isNew && threadLoading) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 48.dp),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        CircularProgressIndicator()
+                    }
+                } else {
+                    EmptyState(
+                        title = if (isNew) "New message" else "No messages yet",
+                        message = if (isNew) {
+                            "Type a contact name or number and a message, then send or schedule it."
+                        } else {
+                            "Messages you exchange with this number appear here."
+                        },
+                    )
+                }
             } else {
                 val ordered = messages.asReversed()
                 // Keep the view pinned to the newest message while it is already
@@ -322,6 +361,49 @@ fun ConversationScreen(
                 if (intent != null) roleLauncher.launch(intent) else openDefaultAppsSettings(context)
             },
         )
+    }
+}
+
+/**
+ * Compact SIM chooser for the compose bar: shows the outgoing SIM's slot as a
+ * badge and lists every active SIM in a dropdown. Only rendered on dual-SIM
+ * devices; the choice is remembered per conversation by the ViewModel.
+ */
+@Composable
+private fun SimPicker(
+    sims: List<SimSubscription>,
+    selectedSubId: Int,
+    onSelect: (Int) -> Unit,
+) {
+    var open by remember { mutableStateOf(false) }
+    val selected = sims.firstOrNull { it.subId == selectedSubId } ?: sims.firstOrNull()
+    Box {
+        FilledTonalIconButton(onClick = { open = true }) {
+            BadgedBox(badge = {
+                Badge { Text("${selected?.slot ?: 1}") }
+            }) {
+                Icon(
+                    Icons.Filled.SimCard,
+                    contentDescription = "SIM: ${selected?.displayName ?: "default"}",
+                )
+            }
+        }
+        DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
+            sims.forEach { sim ->
+                DropdownMenuItem(
+                    text = { Text("SIM ${sim.slot} · ${sim.displayName}") },
+                    trailingIcon = if (sim.subId == selectedSubId) {
+                        { Icon(Icons.Filled.Check, contentDescription = null) }
+                    } else {
+                        null
+                    },
+                    onClick = {
+                        open = false
+                        onSelect(sim.subId)
+                    },
+                )
+            }
+        }
     }
 }
 

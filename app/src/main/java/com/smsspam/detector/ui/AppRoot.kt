@@ -14,6 +14,8 @@ import androidx.compose.material.icons.filled.Sms
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material.icons.outlined.Shield
 import androidx.compose.material.icons.outlined.Sms
+import androidx.compose.material3.Badge
+import androidx.compose.material3.BadgedBox
 import androidx.compose.material3.Icon
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
@@ -103,6 +105,7 @@ fun AppRoot(
     }
 
     val event by viewModel.events.collectAsStateWithLifecycle()
+    val newBlockedCount by viewModel.newBlockedCount.collectAsStateWithLifecycle()
     LaunchedEffect(event) {
         val current = event ?: return@LaunchedEffect
         snackbarHostState.showSnackbar(
@@ -143,10 +146,17 @@ fun AppRoot(
                                 }
                             },
                             icon = {
-                                Icon(
-                                    imageVector = if (selected) dest.selectedIcon else dest.unselectedIcon,
-                                    contentDescription = dest.label,
-                                )
+                                val badgeCount = if (dest.route == Routes.QUARANTINE) newBlockedCount else 0
+                                val imageVector = if (selected) dest.selectedIcon else dest.unselectedIcon
+                                if (badgeCount > 0) {
+                                    BadgedBox(badge = {
+                                        Badge { Text(if (badgeCount > 99) "99+" else "$badgeCount") }
+                                    }) {
+                                        Icon(imageVector = imageVector, contentDescription = dest.label)
+                                    }
+                                } else {
+                                    Icon(imageVector = imageVector, contentDescription = dest.label)
+                                }
                             },
                             label = { Text(dest.label) },
                         )

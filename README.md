@@ -36,10 +36,22 @@ reviewed and restored.
   `لغو11` messages. Presets can be edited, disabled or restored at any time.
 - **Quarantine** — blocked messages are stored in the app, grouped into
   *Blocked* / *Reviewed* / *All*, and can be marked **not spam**, **restored**
-  or **deleted permanently**.
+  or **deleted permanently**. Blocked messages are silent: the Blocked tab
+  badge counts what you have not seen yet and resets whenever you exit the app.
 - **Inbox scan** — scan existing messages and move everything that matches your
   rules into the quarantine.
-- **Notifications** — get an alert the moment a message is blocked.
+- **Verification codes always pass** — the built-in *Verification codes (OTP)*
+  allow rule keeps one-time-code SMS out of the quarantine, even when they also
+  contain a block keyword such as `لغو11`. It is a normal preset rule, so you
+  can edit or disable it.
+- **Auto unsubscribe** — opt in and Spam Guard replies to blocked subscription
+  ads with their unsubscribe code (11 / 12, or the code the ad itself asks
+  for) — once per sender.
+- **Dual-SIM aware** — pick SIM 1 or SIM 2 from the compose bar; the choice is
+  remembered per conversation and honored by scheduled sends. Falls back to the
+  default SIM if that card is no longer active.
+- **Fast conversations** — conversations you scroll past are prefetched into
+  memory, so opening one paints instantly.
 - **Default SMS app** — optionally take the system SMS role so blocked messages
   are truly removed from the inbox (see below).
 - **Material 3 UI** — dynamic color (Material You), edge-to-edge, dark mode,
@@ -47,20 +59,26 @@ reviewed and restored.
 
 ## Default rules
 
-| Rule | Logic | Conditions |
-| --- | --- | --- |
-| Unsubscribe / opt-out (`لغو11`) | OR | body contains `لغو11`, `لغو 11`, `لغو12` |
-| Prize, lottery & winner spam | OR | body contains `برنده`, `جایزه`, `قرعه کشی`, `winner`, `you won` |
-| Messages that contain links | OR | body matches `https?://\S+`, or contains `bit.ly` / `tinyurl.com` (disabled by default) |
+| Rule | Action | Logic | Conditions |
+| --- | --- | --- | --- |
+| Verification codes (OTP) | **Allow** | OR | regexes for Persian/English verification phrases, standalone `otp`, and `code: 123456`-style pairs |
+| Unsubscribe / opt-out (`لغو11`) | Block | OR | body contains `لغو11`, `لغو 11`, `لغو12` |
+| Prize, lottery & winner spam | Block | OR | body contains `برنده`, `جایزه`, `قرعه کشی`, `winner`, `you won` |
+| Messages that contain links | Block | OR | body matches `https?://\S+`, or contains `bit.ly` / `tinyurl.com` (disabled by default) |
+
+**Allow rules** come first: a message matching an enabled allow rule is never
+blocked, no matter which block rules it also trips.
 
 ## How a message is classified
 
-1. Every **enabled** rule is evaluated against the incoming SMS.
-2. Inside a rule, each condition is tested and combined with **ALL** (AND) or
+1. Enabled **allow rules** are checked first (verification codes pass here).
+2. Every **enabled** block rule is evaluated against the incoming SMS.
+3. Inside a rule, each condition is tested and combined with **ALL** (AND) or
    **ANY** (OR).
-3. If any enabled rule matches, the message is treated as spam: a copy is stored
-   in the app and a notification is shown.
-4. The app then tries to remove the message from the system SMS app.
+4. If any block rule matches, the message is treated as spam: a copy is stored
+   in the app (no notification; the Blocked tab badge tracks it) and the app
+   then tries to remove the message from the system SMS app — and, if auto
+   unsubscribe is on and the ad carries a لغو hint, replies with the code.
 
 ## Default SMS app
 
@@ -79,7 +97,7 @@ components Android requires of a default SMS app:
 While holding the role, incoming SMS are handled directly: spam is kept only in
 the app quarantine and is **never written to the inbox**, while normal messages
 are persisted to the system inbox and shown as a notification, so nothing is
-lost.
+lost. Blocked messages never notify.
 
 Without the role the app still collects blocked messages (best effort, via
 `SMS_RECEIVED`) and the *restore* action is best effort.
@@ -95,11 +113,12 @@ app/src/main/java/com/smsspam/detector/
 ├── MainActivity.kt            # entry point, edge-to-edge Compose host
 ├── SpamGuardApp.kt            # Application + notification channel + DI container
 ├── model/                     # Rule, Condition, QuarantineMessage
-├── engine/RuleEngine.kt       # condition matching, AND/OR evaluation
-├── data/                      # reactive StateFlow repositories (rules + messages)
+├── engine/RuleEngine.kt       # condition matching, allow/block rule evaluation
+├── data/                      # reactive StateFlow repositories (rules, messages,
+│                              # schedules) + prefs stores (badge, settings, SIMs)
 ├── sms/                       # SmsReceiver, MmsReceiver, quick-reply service,
-│                              # compose activity, inbox reader, delete/restore
-├── notify/                    # spam + message notifications
+│                              # inbox reader, paged threads, prefetchable cache
+├── notify/                    # message + scheduled-send notifications
 └── ui/                        # Material 3 screens, theme, AppViewModel
 ```
 

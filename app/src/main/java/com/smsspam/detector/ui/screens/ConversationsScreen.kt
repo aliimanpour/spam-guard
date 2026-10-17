@@ -5,7 +5,6 @@ package com.smsspam.detector.ui.screens
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -31,17 +30,18 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExtendedFloatingActionButton
-import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -49,6 +49,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -84,7 +85,7 @@ fun ConversationsScreen(
     var query by remember { mutableStateOf("") }
     var showDefaultDialog by remember { mutableStateOf(false) }
 
-    val permissionLauncher = rememberLauncherForActivityResult(
+val permissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
     ) {
         permissionStatus.value = AppPermission.needed.associateWith { context.hasPermission(it.permission) }
@@ -92,6 +93,7 @@ fun ConversationsScreen(
         // the permission (or its rejection) changed what we can read.
         viewModel.refreshConversations(force = true)
         viewModel.refreshContacts(force = true)
+        viewModel.refreshSims(force = true)
     }
     val roleLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.StartActivityForResult()
@@ -104,6 +106,7 @@ fun ConversationsScreen(
         viewModel.refreshDefaultSms()
         viewModel.refreshConversations()
         viewModel.refreshContacts()
+        viewModel.refreshSims()
         onPauseOrDispose { }
     }
 
@@ -169,6 +172,13 @@ fun ConversationsScreen(
                 },
                 singleLine = true,
                 shape = RoundedCornerShape(28.dp),
+                colors = OutlinedTextFieldDefaults.colors(
+                    focusedBorderColor = Color.Transparent,
+                    unfocusedBorderColor = Color.Transparent,
+                    disabledBorderColor = Color.Transparent,
+                    focusedContainerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
+                    unfocusedContainerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
+                ),
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = 16.dp, vertical = 8.dp),
@@ -201,9 +211,16 @@ fun ConversationsScreen(
                 )
             } else {
                 LazyColumn(
-                    contentPadding = PaddingValues(bottom = 96.dp),
+                    contentPadding = PaddingValues(start = 12.dp, end = 12.dp, top = 4.dp, bottom = 96.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
                     items(visible, key = { it.first.address }) { (conversation, name) ->
+                        // Warm the cache while the user scrolls: every row that
+                        // becomes visible queues its newest page for prefetch,
+                        // so opening it later paints instantly.
+                        LaunchedEffect(conversation.address) {
+                            viewModel.prefetchConversation(conversation)
+                        }
                         ConversationRow(
                             name = name,
                             address = conversation.address,
@@ -241,59 +258,73 @@ private fun ConversationRow(
     query: String,
     onClick: () -> Unit,
 ) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clickable(onClick = onClick)
-            .padding(horizontal = 16.dp, vertical = 12.dp),
-        verticalAlignment = Alignment.CenterVertically,
+    // Unread conversations get a slightly stronger container so the eye picks
+    // them out before the badge is even noticed.
+    Card(
+        onClick = onClick,
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(20.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = if (unread > 0) {
+                MaterialTheme.colorScheme.surfaceContainerHigh
+            } else {
+                MaterialTheme.colorScheme.surfaceContainerLow
+            },
+        ),
+        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
     ) {
-        ContactAvatar(label = name)
-        Spacer(Modifier.width(12.dp))
-        Column(
-            modifier = Modifier.weight(1f),
-            verticalArrangement = Arrangement.spacedBy(2.dp),
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 14.dp, vertical = 12.dp),
+            verticalAlignment = Alignment.CenterVertically,
         ) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                HighlightedText(
-                    text = name.ifBlank { "Unknown" },
-                    query = query,
-                    style = MaterialTheme.typography.titleMedium.copy(
-                        fontWeight = if (unread > 0) FontWeight.Bold else FontWeight.SemiBold,
-                    ),
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.weight(1f),
-                )
-                Spacer(Modifier.width(8.dp))
-                Text(
-                    text = relativeTime(timestamp),
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                HighlightedText(
-                    text = snippet.ifBlank { "(no text)" },
-                    query = query,
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = if (unread > 0) {
-                        MaterialTheme.colorScheme.onSurface
-                    } else {
-                        MaterialTheme.colorScheme.onSurfaceVariant
-                    },
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.weight(1f),
-                )
-                if (unread > 0) {
+            ContactAvatar(label = name)
+            Spacer(Modifier.width(12.dp))
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(2.dp),
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    HighlightedText(
+                        text = name.ifBlank { "Unknown" },
+                        query = query,
+                        style = MaterialTheme.typography.titleMedium.copy(
+                            fontWeight = if (unread > 0) FontWeight.Bold else FontWeight.SemiBold,
+                        ),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f),
+                    )
                     Spacer(Modifier.width(8.dp))
-                    UnreadBadge(unread)
+                    Text(
+                        text = relativeTime(timestamp),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    HighlightedText(
+                        text = snippet.ifBlank { "(no text)" },
+                        query = query,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = if (unread > 0) {
+                            MaterialTheme.colorScheme.onSurface
+                        } else {
+                            MaterialTheme.colorScheme.onSurfaceVariant
+                        },
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f),
+                    )
+                    if (unread > 0) {
+                        Spacer(Modifier.width(8.dp))
+                        UnreadBadge(unread)
+                    }
                 }
             }
         }
     }
-    HorizontalDivider(modifier = Modifier.padding(start = 76.dp))
 }
 
 @Composable

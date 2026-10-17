@@ -26,16 +26,21 @@ import com.smsspam.detector.sms.SmsConversation
 import com.smsspam.detector.sms.SmsInbox
 import com.smsspam.detector.sms.SmsMessage
 import com.smsspam.detector.sms.SmsSender
+import com.smsspam.detector.sms.SmsSims
 import com.smsspam.detector.sms.SmsThreadPage
 import com.smsspam.detector.sms.SmsThreads
+import com.smsspam.detector.sms.SimSubscription
 import com.smsspam.detector.sms.ThreadCache
 import com.smsspam.detector.sms.restoreToInbox
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -72,11 +77,68 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     val messages: StateFlow<List<QuarantineMessage>> = container.messageRepository.messages
     val scheduled: StateFlow<List<ScheduledMessage>> = container.scheduleRepository.scheduled
 
+    // --- Settings (auto unsubscribe) ----------------------------------------
+
+    /** Replies to blocked subscription ads with their unsubscribe code, once per sender. */
+    private val _autoUnsubscribe = MutableStateFlow(container.settingsStore.autoUnsubscribe)
+    val autoUnsubscribe: StateFlow<Boolean> = _autoUnsubscribe.asStateFlow()
+
+    /** Which code to send: [SettingsStore.CODE_AUTO], "11" or "12". */
+    private val _unsubscribeCode = MutableStateFlow(container.settingsStore.unsubscribeCode)
+    val unsubscribeCode: StateFlow<String> = _unsubscribeCode.asStateFlow()
+
+    fun setAutoUnsubscribe(enabled: Boolean) {
+        container.settingsStore.autoUnsubscribe = enabled
+        _autoUnsubscribe.value = enabled
+    }
+
+    fun setUnsubscribeCode(code: String) {
+        container.settingsStore.unsubscribeCode = code
+        _unsubscribeCode.value = code
+    }
+
+    // --- SIM cards ----------------------------------------------------------
+
+    private val _sims = MutableStateFlow<List<SimSubscription>>(emptyList())
+    val sims: StateFlow<List<SimSubscription>> = _sims.asStateFlow()
+
+    private var simsJob: Job? = null
+
+    /**
+     * Loads the active SIMs (needs READ_PHONE_STATE). Cached; pass [force]
+     * after the permission is granted.
+     */
+    fun refreshSims(force: Boolean = false) {
+        if (simsJob?.isActive == true) return
+        if (!force && _sims.value.isNotEmpty()) return
+        simsJob = viewModelScope.launch {
+            _sims.value = withContext(Dispatchers.IO) { SmsSims.active(appContext) }
+        }
+    }
+
+    /**
+     * The subscription id remembered for [address], validated against the
+     * active SIMs; 0 when the conversation should use the default SIM.
+     */
+    fun selectedSubId(address: String): Int {
+        val wanted = container.simStore.subIdFor(address)
+        return wanted.takeIf { _sims.value.any { sim -> sim.subId == it } } ?: 0
+    }
+
+    /** Remembers [subId] as the outgoing SIM for [address]. */
+    fun setSim(address: String, subId: Int) {
+        container.simStore.setSubId(address, subId)
+    }
+
     private val _conversations = MutableStateFlow<List<SmsConversation>>(emptyList())
     val conversations: StateFlow<List<SmsConversation>> = _conversations.asStateFlow()
 
     private val _conversation = MutableStateFlow<List<SmsMessage>>(emptyList())
     val conversation: StateFlow<List<SmsMessage>> = _conversation.asStateFlow()
+
+    /** True while the first page of a thread the cache has never seen is loading. */
+    private val _threadLoading = MutableStateFlow(false)
+    val threadLoading: StateFlow<Boolean> = _threadLoading.asStateFlow()
 
     private val _contacts = MutableStateFlow<Map<String, String>>(emptyMap())
     val contacts: StateFlow<Map<String, String>> = _contacts.asStateFlow()
@@ -147,6 +209,28 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     fun clearAll() {
         container.messageRepository.clearAll()
+    }
+
+    // --- Blocked badge -----------------------------------------------------
+
+    /** Persisted moment after which a blocked message counts as unread. */
+    private val blockedSeenAt = MutableStateFlow(container.unreadStore.lastSeenAt())
+
+    /**
+     * Blocked messages the user has not seen yet: everything caught after the
+     * last time the Blocked tab was opened or the app was exited. The moment
+     * is one persisted timestamp ([UnreadStore]), so exiting the app resets
+     * the badge to zero while messages received in the meantime still count.
+     */
+    val newBlockedCount: StateFlow<Int> =
+        combine(messages, blockedSeenAt) { list, seenAt ->
+            list.count { it.isBlocked && it.timestamp > seenAt }
+        }.stateIn(viewModelScope, SharingStarted.Eagerly, 0)
+
+    /** Clears the Blocked-tab badge; called when the tab is opened/left or the app is exited. */
+    fun markBlockedSeen() {
+        container.unreadStore.markSeen()
+        blockedSeenAt.value = container.unreadStore.lastSeenAt()
     }
 
     // --- Inbox scan --------------------------------------------------------
@@ -333,6 +417,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             openThreadId = 0L
             _conversation.value = emptyList()
             _olderState.value = OlderState.Idle
+            _threadLoading.value = false
             return
         }
         openAddress = trimmed
@@ -342,6 +427,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         val cached = threadCache.get(trimmed)
         _conversation.value = cached?.messages ?: emptyList()
         _olderState.value = if (cached?.hasMore != false) OlderState.Ready else OlderState.EndReached
+        // Only a thread the cache has never seen needs a loading hint; a cached
+        // page paints immediately and just refreshes below.
+        _threadLoading.value = cached == null
         threadJob = viewModelScope.launch {
             val app = appContext
             val loaded = withContext(Dispatchers.IO) {
@@ -357,6 +445,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             _conversation.value = merged
             threadCache.put(trimmed, merged, loaded.hasMore)
             _olderState.value = if (loaded.hasMore) OlderState.Ready else OlderState.EndReached
+            _threadLoading.value = false
         }
     }
 
@@ -402,12 +491,58 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    /** Sends a message now and refreshes the open thread when it succeeds. */
-    fun sendSms(recipient: String, body: String) {
+    // --- Conversation prefetch ---------------------------------------------
+
+    /** Conversations queued for a newest-page prefetch; most recent request last. */
+    private val prefetchPending = ArrayDeque<SmsConversation>()
+
+    private val prefetchLock = Any()
+    private var prefetchWorker: Job? = null
+
+    /**
+     * Queues the newest page of [conversation] for prefetch into the thread
+     * cache. The conversation list calls this for every row that becomes
+     * visible while the user scrolls, so tapping a conversation paints
+     * instantly instead of waiting on a provider read. Cached and queued
+     * threads are skipped, and one worker drains the queue most-recent-first,
+     * one O(page) indexed query at a time.
+     */
+    fun prefetchConversation(conversation: SmsConversation) {
+        val address = conversation.address.trim()
+        if (address.isBlank() || !SmsThreads.canRead(appContext)) return
+        synchronized(prefetchLock) {
+            if (threadCache.contains(address)) return
+            if (prefetchPending.any { it.address == address }) return
+            prefetchPending.addLast(conversation)
+        }
+        if (prefetchWorker?.isActive == true) return
+        prefetchWorker = viewModelScope.launch {
+            while (true) {
+                val next = synchronized(prefetchLock) {
+                    // Most-recent-first: the row the user just scrolled to is
+                    // the one they are most likely to tap next.
+                    prefetchPending.removeLastOrNull()
+                } ?: return@launch
+                val page = withContext(Dispatchers.IO) {
+                    val threadId = next.threadId.takeIf { it > 0L }
+                        ?: SmsThreads.resolveThreadId(appContext, next.address)
+                    if (threadId > 0L) SmsThreads.readThreadPage(appContext, threadId)
+                    else SmsThreadPage(emptyList(), hasMore = false)
+                }
+                if (page.messages.isNotEmpty()) {
+                    threadCache.put(next.address, page.messages, page.hasMore)
+                }
+                delay(PREFETCH_STAGGER_MS)
+            }
+        }
+    }
+
+    /** Sends a message now (with the given SIM when provided) and refreshes the open thread. */
+    fun sendSms(recipient: String, body: String, subId: Int = 0) {
         if (recipient.isBlank() || body.isBlank()) return
         viewModelScope.launch {
             val app = getApplication<Application>()
-            val ok = withContext(Dispatchers.IO) { SmsSender.send(app, recipient, body) }
+            val ok = withContext(Dispatchers.IO) { SmsSender.send(app, recipient, body, subId) }
             if (ok) {
                 _events.value = UiEvent.Message("Message sent")
                 openConversation(SmsSender.parseRecipients(recipient).firstOrNull().orEmpty())
@@ -419,9 +554,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     // --- Scheduled messages ------------------------------------------------
 
-    fun scheduleMessage(recipient: String, body: String, sendAt: Long): Boolean {
+    fun scheduleMessage(recipient: String, body: String, sendAt: Long, subId: Int = 0): Boolean {
         if (recipient.isBlank() || body.isBlank()) return false
-        val message = ScheduledMessage(recipient = recipient.trim(), body = body, sendAt = sendAt)
+        val message = ScheduledMessage(recipient = recipient.trim(), body = body, sendAt = sendAt, subId = subId)
         container.scheduleRepository.add(message)
         SmsAlarmScheduler.schedule(getApplication(), message)
         _events.value = UiEvent.Message("Message scheduled")
@@ -477,5 +612,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
         /** Debounce for provider change notifications from [smsObserver]. */
         const val PROVIDER_REFRESH_DEBOUNCE_MS = 300L
+
+        /** Pause between prefetch page reads so scrolling never starves the provider. */
+        const val PREFETCH_STAGGER_MS = 50L
     }
 }

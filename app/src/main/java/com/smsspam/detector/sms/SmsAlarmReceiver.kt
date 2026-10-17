@@ -32,7 +32,7 @@ class SmsAlarmReceiver : BroadcastReceiver() {
         val message = repository.scheduled.value.firstOrNull { it.id == id } ?: return
         if (message.status != ScheduledStatus.PENDING) return
 
-        val sent = SmsSender.send(app, message.recipient, message.body)
+        val sent = SmsSender.send(app, message.recipient, message.body, message.subId)
         repository.updateStatus(id, if (sent) ScheduledStatus.SENT else ScheduledStatus.FAILED)
         Notifier.notifyScheduledResult(app, message.recipient, message.body, sent)
         Log.i(TAG, "scheduled send id=$id success=$sent")

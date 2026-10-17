@@ -28,6 +28,10 @@ class ThreadCache(
     @Synchronized
     fun get(address: String): Entry? = entries[address]
 
+    /** True when [address] has a cached window, without bumping its recency. */
+    @Synchronized
+    fun contains(address: String): Boolean = entries.containsKey(address)
+
     /**
      * Caches [messages] (oldest first) for [address], keeping only the newest
      * window. [hasMore] is sticky when trimming has to drop older pages.
@@ -45,7 +49,9 @@ class ThreadCache(
     fun clear() = entries.clear()
 
     companion object {
-        const val DEFAULT_MAX_THREADS = 12
+        // Large enough that scrolling a long list — where every visible row is
+        // prefetched — still leaves recently opened threads cached.
+        const val DEFAULT_MAX_THREADS = 24
         const val DEFAULT_MAX_MESSAGES = 200
     }
 }
