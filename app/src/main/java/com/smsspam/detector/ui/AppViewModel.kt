@@ -1,7 +1,13 @@
 package com.smsspam.detector.ui
 
 import android.app.Application
+import android.content.Context
+import android.database.ContentObserver
 import android.net.Uri
+import android.os.Handler
+import android.os.Looper
+import android.os.SystemClock
+import android.provider.Telephony
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.smsspam.detector.SpamGuardApp
@@ -20,10 +26,13 @@ import com.smsspam.detector.sms.SmsConversation
 import com.smsspam.detector.sms.SmsInbox
 import com.smsspam.detector.sms.SmsMessage
 import com.smsspam.detector.sms.SmsSender
+import com.smsspam.detector.sms.SmsThreadPage
 import com.smsspam.detector.sms.SmsThreads
+import com.smsspam.detector.sms.ThreadCache
 import com.smsspam.detector.sms.restoreToInbox
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -40,6 +49,18 @@ sealed interface ScanState {
     data object Idle : ScanState
     data object Scanning : ScanState
     data class Done(val scanned: Int, val caught: Int, val removed: Int) : ScanState
+}
+
+/** Progress of loading older messages for the open conversation. */
+sealed interface OlderState {
+    /** No thread open, or nothing known about older messages yet. */
+    data object Idle : OlderState
+    /** Older messages may exist and the next page is not loading. */
+    data object Ready : OlderState
+    /** A page of older messages is loading. */
+    data object Loading : OlderState
+    /** Every message of the thread is loaded. */
+    data object EndReached : OlderState
 }
 
 class AppViewModel(app: Application) : AndroidViewModel(app) {
@@ -158,41 +179,106 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     // --- Conversations -----------------------------------------------------
 
-    private var conversationsJob: Job? = null
+    private var refreshJob: Job? = null
+    private var threadJob: Job? = null
+    private var olderJob: Job? = null
     private var contactsJob: Job? = null
-    private var conversationJob: Job? = null
     private var recipientsJob: Job? = null
 
     /**
-     * Messages of every thread from the last inbox scan, keyed by address. This
-     * is what makes opening a conversation instant: the thread renders from here
-     * immediately while a background refresh picks up anything new.
+     * Newest page of the most recently opened threads. Re-opening a thread
+     * paints from here with zero provider work; entries are bounded (see
+     * [ThreadCache]) so memory never grows with the inbox.
      */
-    @Volatile
-    private var threadCache: Map<String, List<SmsMessage>> = emptyMap()
+    private val threadCache = ThreadCache()
 
     /** Address of the thread currently on screen, or null. */
     @Volatile
     private var openAddress: String? = null
 
+    /** System thread id of the open conversation; 0 until resolved. */
+    @Volatile
+    private var openThreadId = 0L
+
+    /** When the conversation list was last read, for the resume freshness window. */
+    @Volatile
+    private var summariesLoadedAt = 0L
+
+    private val _olderState = MutableStateFlow<OlderState>(OlderState.Idle)
+    val olderState: StateFlow<OlderState> = _olderState.asStateFlow()
+
+    private val appContext: Context get() = getApplication()
+
     /**
-     * Reloads the conversation list from the system SMS provider in a single
-     * pass that also caches every thread's messages. Concurrent requests are
-     * coalesced so navigating between screens never launches overlapping inbox
-     * reads.
+     * Watches the SMS provider so data changes push into the cached UI state
+     * instead of the UI polling on every resume. Runs for the ViewModel's
+     * lifetime, which spans backgrounding, so the cache is already fresh when
+     * the user comes back.
      */
-    fun refreshConversations() {
-        if (conversationsJob?.isActive == true) return
-        conversationsJob = viewModelScope.launch {
-            val app = getApplication<Application>()
-            val inbox = withContext(Dispatchers.IO) { SmsThreads.readInbox(app) }
-            _conversations.value = inbox.conversations
-            threadCache = inbox.messagesByAddress
-            // Keep an already-open thread fresh without a visible reload.
-            openAddress?.let { address ->
-                inbox.messagesByAddress[address]?.let { _conversation.value = it }
+    private val smsObserver = object : ContentObserver(Handler(Looper.getMainLooper())) {
+        override fun onChange(selfChange: Boolean) {
+            // Coalesce bursts (incoming SMS, our own inserts, mark-read, bulk
+            // deletes during a scan) into a single refresh.
+            refreshJob?.cancel()
+            refreshJob = viewModelScope.launch {
+                delay(PROVIDER_REFRESH_DEBOUNCE_MS)
+                refreshConversationsNow()
             }
         }
+    }
+
+    init {
+        appContext.contentResolver.registerContentObserver(
+            Telephony.Sms.CONTENT_URI,
+            /* notifyForDescendants = */ true,
+            smsObserver,
+        )
+    }
+
+    override fun onCleared() {
+        appContext.contentResolver.unregisterContentObserver(smsObserver)
+        super.onCleared()
+    }
+
+    /**
+     * Refreshes the conversation list from the system SMS provider. When the
+     * cached list is still inside the freshness window this returns without
+     * touching the provider, so navigating back to the list is free; the
+     * [smsObserver] keeps the cache current in between. Pass [force] to skip
+     * the freshness window (after granting a permission, for example).
+     */
+    fun refreshConversations(force: Boolean = false) {
+        if (!force && SystemClock.elapsedRealtime() - summariesLoadedAt < SUMMARIES_FRESH_MS) return
+        refreshJob?.cancel()
+        refreshJob = viewModelScope.launch { refreshConversationsNow() }
+    }
+
+    private suspend fun refreshConversationsNow() {
+        val app = appContext
+        if (!SmsThreads.canRead(app)) {
+            _conversations.value = emptyList()
+            return
+        }
+        val conversations = withContext(Dispatchers.IO) { SmsThreads.readConversations(app) }
+        summariesLoadedAt = SystemClock.elapsedRealtime()
+        _conversations.value = conversations
+        refreshOpenThread()
+    }
+
+    /**
+     * Reloads the open thread's newest page after a provider change and merges
+     * it into what is already on screen, so new messages appear without the
+     * list jumping or losing pages the user has scrolled to.
+     */
+    private suspend fun refreshOpenThread() {
+        val address = openAddress ?: return
+        val threadId = openThreadId
+        if (threadId <= 0L) return
+        val page = withContext(Dispatchers.IO) { SmsThreads.readThreadPage(appContext, threadId) }
+        if (openAddress != address) return
+        val merged = SmsThreads.mergePages(page.messages, _conversation.value)
+        _conversation.value = merged
+        threadCache.put(address, merged, _olderState.value !is OlderState.EndReached)
     }
 
     /**
@@ -233,29 +319,85 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /**
-     * Opens a thread. The messages render instantly from the cached inbox scan
-     * (never the previously opened thread), while a background read refreshes
-     * that one thread and marks it read.
+     * Opens a thread. The newest cached page renders immediately (never the
+     * previously opened thread), then a single indexed provider read refreshes
+     * that page and marks the thread read. Only that page is loaded; older
+     * history arrives through [loadOlderMessages] as the user scrolls.
      */
     fun openConversation(address: String) {
-        conversationJob?.cancel()
-        openAddress = address.ifBlank { null }
-        if (address.isBlank()) {
+        val trimmed = address.trim()
+        threadJob?.cancel()
+        olderJob?.cancel()
+        if (trimmed.isBlank()) {
+            openAddress = null
+            openThreadId = 0L
             _conversation.value = emptyList()
+            _olderState.value = OlderState.Idle
             return
         }
-        // Instant: serve the already-scanned thread, or an empty list when the
-        // cache does not know it yet.
-        _conversation.value = threadCache[address] ?: emptyList()
-        conversationJob = viewModelScope.launch {
-            val app = getApplication<Application>()
+        openAddress = trimmed
+        openThreadId = _conversations.value.firstOrNull { it.address == trimmed }?.threadId ?: 0L
+        // Instant: paint the cached page, or an empty list while the first
+        // page loads for a thread the cache has not seen yet.
+        val cached = threadCache.get(trimmed)
+        _conversation.value = cached?.messages ?: emptyList()
+        _olderState.value = if (cached?.hasMore != false) OlderState.Ready else OlderState.EndReached
+        threadJob = viewModelScope.launch {
+            val app = appContext
             val loaded = withContext(Dispatchers.IO) {
-                SmsThreads.markThreadRead(app, address)
-                SmsThreads.readMessages(app, address)
+                val threadId = openThreadId.takeIf { it > 0L }
+                    ?: SmsThreads.resolveThreadId(app, trimmed)
+                if (openAddress == trimmed) openThreadId = threadId
+                if (threadId > 0L) SmsThreads.markThreadRead(app, threadId)
+                SmsThreads.readThreadPage(app, threadId)
             }
-            if (openAddress == address) {
-                threadCache = threadCache + (address to loaded)
-                _conversation.value = loaded
+            if (openAddress != trimmed) return@launch
+            // Merge, not replace: keep pages the user already scrolled to.
+            val merged = SmsThreads.mergePages(loaded.messages, _conversation.value)
+            _conversation.value = merged
+            threadCache.put(trimmed, merged, loaded.hasMore)
+            _olderState.value = if (loaded.hasMore) OlderState.Ready else OlderState.EndReached
+        }
+    }
+
+    /**
+     * Loads the next page of older messages for the open thread. Called by the
+     * UI when the scroll reaches the oldest loaded message; repeated calls
+     * while a load is running are ignored, which makes scroll-triggered
+     * paging self-throttling.
+     */
+    fun loadOlderMessages() {
+        val address = openAddress ?: return
+        if (_olderState.value != OlderState.Ready) return
+        if (olderJob?.isActive == true) return
+        val current = _conversation.value
+        if (current.isEmpty()) return
+        olderJob = viewModelScope.launch {
+            _olderState.value = OlderState.Loading
+            val app = appContext
+            val before = current.minOf { it.timestamp }
+            val page = withContext(Dispatchers.IO) {
+                val threadId = openThreadId.takeIf { it > 0L }
+                    ?: SmsThreads.resolveThreadId(app, address)
+                if (threadId > 0L) {
+                    SmsThreads.readThreadPage(app, threadId, before = before)
+                } else {
+                    SmsThreadPage(emptyList(), hasMore = false)
+                }
+            }
+            if (openAddress != address) {
+                _olderState.value = OlderState.Idle
+                return@launch
+            }
+            if (page.messages.isEmpty()) {
+                _olderState.value = OlderState.EndReached
+            } else {
+                // Merge against the live list: a provider refresh may have
+                // added newer messages while this page was loading.
+                val merged = SmsThreads.mergePages(page.messages, _conversation.value)
+                _conversation.value = merged
+                threadCache.put(address, merged, page.hasMore)
+                _olderState.value = if (page.hasMore) OlderState.Ready else OlderState.EndReached
             }
         }
     }
@@ -324,8 +466,16 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             val app = getApplication<Application>()
             val result = runCatching { withContext(Dispatchers.IO) { DataTransfer.import(app, uri, container) } }
-            result.onSuccess { refreshConversations() }
+            result.onSuccess { refreshConversations(force = true) }
             _events.value = UiEvent.Message(result.getOrElse { "Import failed: ${it.message}" })
         }
+    }
+
+    private companion object {
+        /** How long the cached conversation list is trusted before a resume re-queries. */
+        const val SUMMARIES_FRESH_MS = 15_000L
+
+        /** Debounce for provider change notifications from [smsObserver]. */
+        const val PROVIDER_REFRESH_DEBOUNCE_MS = 300L
     }
 }

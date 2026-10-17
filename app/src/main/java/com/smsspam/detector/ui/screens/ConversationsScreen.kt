@@ -88,7 +88,9 @@ fun ConversationsScreen(
         ActivityResultContracts.RequestMultiplePermissions()
     ) {
         permissionStatus.value = AppPermission.needed.associateWith { context.hasPermission(it.permission) }
-        viewModel.refreshConversations()
+        // Force: the freshness window must not swallow the first load after
+        // the permission (or its rejection) changed what we can read.
+        viewModel.refreshConversations(force = true)
         viewModel.refreshContacts(force = true)
     }
     val roleLauncher = rememberLauncherForActivityResult(

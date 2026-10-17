@@ -6,6 +6,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -19,6 +20,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
@@ -58,6 +60,7 @@ import com.smsspam.detector.contacts.Recipient
 import com.smsspam.detector.contacts.RecipientDirectory
 import com.smsspam.detector.sms.SmsMessage
 import com.smsspam.detector.ui.AppViewModel
+import com.smsspam.detector.ui.OlderState
 import com.smsspam.detector.ui.components.ContactAvatar
 import com.smsspam.detector.ui.components.EmptyState
 import com.smsspam.detector.ui.components.HighlightedText
@@ -83,9 +86,11 @@ fun ConversationScreen(
 ) {
     val context = LocalContext.current
     val messages by viewModel.conversation.collectAsStateWithLifecycle()
+    val olderState by viewModel.olderState.collectAsStateWithLifecycle()
     val contacts by viewModel.contacts.collectAsStateWithLifecycle()
     val recipients by viewModel.recipients.collectAsStateWithLifecycle()
     val isDefaultSms by viewModel.isDefaultSms.collectAsStateWithLifecycle()
+    val listState = rememberLazyListState()
     var recipient by remember(address) { mutableStateOf(address.orEmpty()) }
     var body by remember(initialBody) { mutableStateOf(initialBody) }
     var showDefaultDialog by remember { mutableStateOf(false) }
@@ -259,8 +264,15 @@ fun ConversationScreen(
                 )
             } else {
                 val ordered = messages.asReversed()
+                // Keep the view pinned to the newest message while it is already
+                // at the bottom, so arriving messages flow in without dragging
+                // the list away from history the user is reading.
+                LaunchedEffect(ordered.firstOrNull()?.id) {
+                    if (listState.firstVisibleItemIndex == 0) listState.scrollToItem(0)
+                }
                 LazyColumn(
                     modifier = Modifier.fillMaxSize(),
+                    state = listState,
                     reverseLayout = true,
                     contentPadding = PaddingValues(horizontal = 12.dp, vertical = 12.dp),
                     verticalArrangement = Arrangement.spacedBy(6.dp),
@@ -276,6 +288,25 @@ fun ConversationScreen(
                             if (showDate) DayChip(formatDay(message.timestamp))
                             MessageBubble(message)
                         }
+                    }
+                    // With reverseLayout, items declared after the messages sit
+                    // at the visually top (older) end of the list.
+                    when (olderState) {
+                        OlderState.Loading -> item(key = "older_loading") {
+                            ThreadStatusChip("Loading older messages…")
+                        }
+                        // Composing this item is the scroll trigger: it only
+                        // exists when the end of the loaded history is reached,
+                        // and re-arms per loaded page until the thread ends.
+                        OlderState.Ready -> item(key = "older_loader") {
+                            LoadOlderTrigger(loadedCount = ordered.size) {
+                                viewModel.loadOlderMessages()
+                            }
+                        }
+                        OlderState.EndReached -> item(key = "older_end") {
+                            ThreadStatusChip("Beginning of conversation")
+                        }
+                        OlderState.Idle -> Unit
                     }
                 }
             }
@@ -344,6 +375,41 @@ private fun DayChip(label: String) {
             modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
         )
     }
+}
+
+/** Small centered status chip shown at the older end of a thread. */
+@Composable
+private fun ThreadStatusChip(label: String) {
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 6.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        Surface(
+            color = MaterialTheme.colorScheme.surfaceContainerHighest,
+            shape = RoundedCornerShape(50),
+        ) {
+            Text(
+                text = label,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
+            )
+        }
+    }
+}
+
+/**
+ * Invisible pagination sentinel at the older end of the thread. Entering
+ * composition means the user reached the loaded history boundary and requests
+ * the next page; keying on [loadedCount] re-fires it while the sentinel stays
+ * visible, so holding the scroll at the end keeps older pages streaming in.
+ */
+@Composable
+private fun LoadOlderTrigger(loadedCount: Int, onLoad: () -> Unit) {
+    LaunchedEffect(loadedCount) { onLoad() }
+    Box(Modifier.fillMaxWidth())
 }
 
 @Composable

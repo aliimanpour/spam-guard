@@ -62,6 +62,15 @@ the background.
   values, drawables, mipmaps and XML rules — do not add layout XML.
 - **Manual DI.** Everything hangs off `AppContainer` (created in `SpamGuardApp`).
   Do not introduce Hilt/Koin; pass `AppViewModel` down from `AppRoot`.
+- **Conversations are cached and paged, never bulk-scanned.** The conversation
+  list comes from the provider's precomputed threads table
+  (`SmsThreads.readConversations`); a thread's messages load one
+  `SmsThreads.PAGE_SIZE` window at a time (`SmsThreads.readThreadPage`, keyed
+  by indexed `thread_id`), and the newest page of recently opened threads lives
+  in the bounded LRU `ThreadCache`. `AppViewModel` also watches the provider
+  with a debounced `ContentObserver` and serves resume refreshes from the cache
+  within a freshness window. Do not reintroduce full-inbox scans or
+  `address`-based queries (no index → full table scan) for these screens.
 - **Persistence = `JsonListStore`.** Rules and messages are stored as JSON arrays
   in `SharedPreferences`, not Room/SQLite. New persisted models implement
   `toJson()` / `fromJson()` with `org.json`, tolerate missing keys
